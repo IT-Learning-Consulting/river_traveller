@@ -3,3 +3,10 @@ discord.log
 /tests/
 /__pycache__/
 /.pytest_cache/
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover

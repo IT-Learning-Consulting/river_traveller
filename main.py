@@ -9,6 +9,9 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
+# Import Flask server for keeping bot alive on Render
+from server import keep_alive
+
 # Import command setup functions
 from commands.roll import setup as setup_roll
 from commands.boat_handling import setup as setup_boat_handling
@@ -26,8 +29,8 @@ handler = logging.FileHandler(filename="discord.log", encoding="utf-8", mode="w"
 intents = discord.Intents.default()
 intents.message_content = True
 
-# Initialize bot
-bot = commands.Bot(command_prefix="/", intents=intents)
+# Initialize bot (use ! for prefix commands, disable default help command)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 
 @bot.event
@@ -89,4 +92,8 @@ setup_help(bot)
 
 # ==================== RUN BOT ====================
 if __name__ == "__main__":
+    # Start Flask server to keep bot alive on Render's free tier
+    keep_alive()
+
+    # Run the Discord bot
     bot.run(token, log_handler=handler, log_level=logging.DEBUG)

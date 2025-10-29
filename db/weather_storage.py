@@ -54,6 +54,9 @@ class WeatherStorage:
                 CREATE TABLE IF NOT EXISTS guild_weather_state (
                     guild_id TEXT PRIMARY KEY,
                     current_day INTEGER DEFAULT 1,
+                    current_stage INTEGER DEFAULT 1,
+                    stage_duration INTEGER DEFAULT 3,
+                    stage_display_mode TEXT DEFAULT 'simple',
                     journey_start_date TEXT,
                     last_weather_date TEXT,
                     season TEXT NOT NULL,
@@ -61,6 +64,40 @@ class WeatherStorage:
                 )
             """
             )
+
+            # Add missing columns if they don't exist (migrations for existing databases)
+            try:
+                cursor.execute(
+                    """
+                    ALTER TABLE guild_weather_state 
+                    ADD COLUMN current_stage INTEGER DEFAULT 1
+                    """
+                )
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
+
+            try:
+                cursor.execute(
+                    """
+                    ALTER TABLE guild_weather_state 
+                    ADD COLUMN stage_duration INTEGER DEFAULT 3
+                    """
+                )
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
+
+            try:
+                cursor.execute(
+                    """
+                    ALTER TABLE guild_weather_state 
+                    ADD COLUMN stage_display_mode TEXT DEFAULT 'simple'
+                    """
+                )
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
 
             # Daily weather records table
             cursor.execute(
@@ -99,7 +136,9 @@ class WeatherStorage:
             """
             )
 
-    def start_journey(self, guild_id: str, season: str, province: str) -> None:
+    def start_journey(
+        self, guild_id: str, season: str, province: str, stage_duration: int = 3
+    ) -> None:
         """
         Start a new journey for a guild.
 
@@ -107,6 +146,7 @@ class WeatherStorage:
             guild_id: Discord guild ID
             season: Season name (spring, summer, autumn, winter)
             province: Province name
+            stage_duration: Number of days per stage (default: 3)
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -121,11 +161,12 @@ class WeatherStorage:
             cursor.execute(
                 """
                 INSERT INTO guild_weather_state 
-                (guild_id, current_day, journey_start_date, last_weather_date, season, province)
-                VALUES (?, 1, ?, ?, ?, ?)
+                (guild_id, current_day, current_stage, stage_duration, stage_display_mode, journey_start_date, last_weather_date, season, province)
+                VALUES (?, 1, 1, ?, 'simple', ?, ?, ?, ?)
             """,
                 (
                     guild_id,
+                    stage_duration,
                     datetime.now().isoformat(),
                     datetime.now().isoformat(),
                     season,
@@ -264,6 +305,95 @@ class WeatherStorage:
 
             row = cursor.fetchone()
             return row["current_day"] if row else 0
+
+    def advance_stage(self, guild_id: str) -> tuple[int, int]:
+        """
+        Advance to the next stage, incrementing day by stage_duration.
+
+        Args:
+            guild_id: Discord guild ID
+
+        Returns:
+            Tuple of (new_day_number, new_stage_number)
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Get current state
+            cursor.execute(
+                """
+                SELECT current_day, current_stage, stage_duration 
+                FROM guild_weather_state 
+                WHERE guild_id = ?
+            """,
+                (guild_id,),
+            )
+
+            row = cursor.fetchone()
+            if not row:
+                return 0, 0
+
+            # Handle legacy data without stage fields
+            current_day = row["current_day"]
+            current_stage = row["current_stage"] if "current_stage" in row.keys() else 1
+            stage_duration = (
+                row["stage_duration"] if "stage_duration" in row.keys() else 3
+            )
+
+            new_day = current_day + stage_duration
+            new_stage = current_stage + 1
+
+            # Update to new stage
+            cursor.execute(
+                """
+                UPDATE guild_weather_state 
+                SET current_day = ?,
+                    current_stage = ?,
+                    last_weather_date = ?
+                WHERE guild_id = ?
+            """,
+                (new_day, new_stage, datetime.now().isoformat(), guild_id),
+            )
+
+            return new_day, new_stage
+
+    def update_stage_duration(self, guild_id: str, stage_duration: int) -> None:
+        """
+        Update stage duration for an existing journey.
+
+        Args:
+            guild_id: Discord guild ID
+            stage_duration: New stage duration in days
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE guild_weather_state 
+                SET stage_duration = ?
+                WHERE guild_id = ?
+            """,
+                (stage_duration, guild_id),
+            )
+
+    def update_stage_display_mode(self, guild_id: str, display_mode: str):
+        """
+        Update stage display mode for a guild's journey.
+
+        Args:
+            guild_id: Discord guild ID
+            display_mode: Display mode ('simple' or 'detailed')
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE guild_weather_state 
+                SET stage_display_mode = ? 
+                WHERE guild_id = ?
+            """,
+                (display_mode, guild_id),
+            )
 
     def get_journey_state(self, guild_id: str) -> Optional[Dict]:
         """

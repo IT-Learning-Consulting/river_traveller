@@ -1,2 +1,6 @@
 discord.py
 python-dotenv
+flask
+pytest
+coverage
+pytest-cov

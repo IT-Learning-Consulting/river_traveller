@@ -87,10 +87,13 @@ def _create_general_help_embed() -> discord.Embed:
 
     # Weather command
     embed.add_field(
-        name="🌦️ /weather",
+        name="🌦️ /weather & /weather-stage-config",
         value=(
             "Generate and manage weather for river journeys.\n"
-            "Use `/help weather` for action details and province list."
+            "• `/weather next` - Daily progression\n"
+            "• `/weather next-stage` - Multi-day travel (stage-based)\n"
+            "• `/weather-stage-config` - 🔒 GM: Configure stages\n"
+            "Use `/help weather` for full details, stage modes, and province list."
         ),
         inline=False,
     )
@@ -109,8 +112,11 @@ def _create_general_help_embed() -> discord.Embed:
     embed.add_field(
         name="🎭 GM Features",
         value=(
-            "Commands marked with 🔒 have restricted override parameters.\n"
-            "**Who can use overrides:** Server owner or users with the **GM** role"
+            "Commands marked with 🔒 have restricted parameters.\n"
+            "**Who can use:** Server owner or users with the **GM** role\n\n"
+            "• **Weather Override** - Manually set all weather parameters\n"
+            "• **Stage Config** - Control multi-day progression and display\n"
+            "• **Encounter Override** - Force specific encounter types"
         ),
         inline=False,
     )
@@ -121,7 +127,8 @@ def _create_general_help_embed() -> discord.Embed:
         value=(
             "• Commands work as both `/command` (slash) and `!command` (prefix)\n"
             "• Weather and encounters affect boat handling modifiers\n"
-            "• Use `/weather next` each in-game day to track conditions"
+            "• Use `/weather next` or `/weather next-stage` to progress time\n"
+            "• Use `/help weather` to learn about stage-based travel"
         ),
         inline=False,
     )
@@ -300,17 +307,30 @@ def _create_weather_help() -> discord.Embed:
     """Create detailed help for the weather command."""
     embed = discord.Embed(
         title="🌦️ /weather - Journey Weather Management",
-        description="Generate and track weather conditions for multi-day river journeys.",
+        description="Generate and track weather conditions for multi-day river journeys with stage-based progression.",
         color=discord.Color.gold(),
     )
 
     embed.add_field(
-        name="📋 Actions",
+        name="📋 Daily Progression",
         value=(
             "**`/weather next`** - Generate weather for the next day\n"
-            "**`/weather journey <season> <province>`** - Start new journey\n"
             "**`/weather view <day>`** - View weather for specific day\n"
+            "**`/weather journey <season> <province>`** - Start new journey\n"
             "**`/weather override <season> <province>`** - 🔒 GM only - Manual weather"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="🗺️ Stage-Based Travel",
+        value=(
+            "**`/weather next-stage`** - Advance multiple days at once\n"
+            "**`/weather-stage-config`** - 🔒 GM only - Configure stage settings\n\n"
+            "**Stages** let you generate weather for multiple days of travel simultaneously!\n"
+            "• Default: 3 days per stage (configurable 1-10 days)\n"
+            "• Two display modes: Simple summary or detailed breakdown\n"
+            "• Perfect for fast-forwarding travel or planning ahead"
         ),
         inline=False,
     )
@@ -332,12 +352,24 @@ def _create_weather_help() -> discord.Embed:
     )
 
     embed.add_field(
-        name="📖 Examples",
+        name="📖 Examples - Daily",
         value=(
             "`/weather journey summer reikland` - Start summer journey in Reikland\n"
             "`/weather next` - Generate next day's weather\n"
             "`/weather view 3` - View weather for day 3\n"
             "`/weather override autumn talabecland` - 🔒 GM: Manually set weather"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="📖 Examples - Stage Progression",
+        value=(
+            "`/weather next-stage` - Generate weather for next stage (3 days default)\n"
+            "`/weather-stage-config` - 🔒 GM: View current stage settings\n"
+            "`/weather-stage-config stage_duration:5` - 🔒 GM: Set 5 days per stage\n"
+            "`/weather-stage-config display_mode:detailed` - 🔒 GM: Show full info\n"
+            "`/weather-stage-config stage_duration:3 display_mode:simple` - 🔒 GM: Both"
         ),
         inline=False,
     )
@@ -357,13 +389,35 @@ def _create_weather_help() -> discord.Embed:
     )
 
     embed.add_field(
-        name="� GM Override Feature",
+        name="🎨 Stage Display Modes",
+        value=(
+            "**Simple (Default):** Brief summary per day\n"
+            "• Weather type with emoji (🌤️ ☁️ 🌧️)\n"
+            "• Temperature and special events\n"
+            "• Quick overview for fast travel\n\n"
+            "**Detailed:** Complete breakdown per day\n"
+            "• Full wind timeline (dawn, noon, dusk, midnight)\n"
+            "• Weather effects and modifiers\n"
+            "• Temperature categories and special event details\n"
+            "• Perfect for planning or important travel days\n\n"
+            "💡 Switch anytime: `/weather-stage-config display_mode:<simple|detailed>`"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="🔒 GM Features",
         value=(
             "**Who can use:** Server owner or users with **GM** role\n\n"
-            "The override action lets GMs manually set all weather parameters:\n"
+            "**Override Weather:** Manually set all weather parameters\n"
             "• Choose wind strength and direction for each time\n"
             "• Set temperature and weather conditions\n"
-            "• Perfect for crafting specific scenarios or story beats"
+            "• Perfect for crafting specific scenarios\n\n"
+            "**Stage Configuration:** Control multi-day progression\n"
+            "• Set stage duration (1-10 days per stage)\n"
+            "• Choose display mode (simple summary or detailed)\n"
+            "• Configure once, affects all future `/weather next-stage` commands\n"
+            "• Mix with daily progression (`/weather next`) as needed"
         ),
         inline=False,
     )

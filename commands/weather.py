@@ -67,6 +67,7 @@ def setup(bot: commands.Bot):
     @app_commands.choices(
         action=[
             app_commands.Choice(name="Generate Next Day", value="next"),
+            app_commands.Choice(name="Next Stage (Multi-Day)", value="next-stage"),
             app_commands.Choice(name="Start New Journey", value="journey"),
             app_commands.Choice(name="View Day", value="view"),
             app_commands.Choice(name="End Journey", value="end"),
@@ -136,6 +137,8 @@ def setup(bot: commands.Bot):
 
         if action == "next":
             await _generate_next_day(context, guild_id, is_slash)
+        elif action == "next-stage":
+            await _generate_next_stage(context, guild_id, is_slash)
         elif action == "journey":
             await _start_new_journey(context, guild_id, season, province, is_slash)
         elif action == "view":
@@ -276,6 +279,125 @@ def setup(bot: commands.Bot):
 
         except Exception as e:  # pylint: disable=broad-exception-caught
             await _send_error(context, f"Error generating weather: {str(e)}", is_slash)
+
+    async def _generate_next_stage(context, guild_id: str, is_slash: bool):
+        """Generate weather for the next stage (multiple days)."""
+        try:
+            storage = WeatherStorage()
+            journey = storage.get_journey_state(guild_id)
+
+            # If no journey exists, inform user
+            if not journey:
+                await _send_error(
+                    context,
+                    "❌ No journey in progress. Use `/weather journey` to start one first.",
+                    is_slash,
+                )
+                return
+
+            current_day = journey["current_day"]
+            stage_duration = journey.get(
+                "stage_duration", 3
+            )  # Default to 3 if not present
+            season = journey["season"]
+            province = journey["province"]
+
+            # Check if we already have weather for current day
+            current_weather = storage.get_daily_weather(guild_id, current_day)
+            if not current_weather:
+                await _send_error(
+                    context,
+                    "❌ Please generate weather for the current day first using `/weather next`.",
+                    is_slash,
+                )
+                return
+
+            # Advance to next stage
+            new_day, new_stage = storage.advance_stage(guild_id)
+
+            # Generate weather for each day in the new stage
+            stage_weathers = []
+            for day_offset in range(stage_duration):
+                day_num = new_day + day_offset
+
+                # Get previous day's midnight wind for continuity
+                prev_day_num = day_num - 1
+                prev_weather = storage.get_daily_weather(guild_id, prev_day_num)
+
+                if prev_weather:
+                    previous_midnight = prev_weather["wind_timeline"][3]  # Midnight
+                    wind_timeline = generate_daily_wind_with_previous(previous_midnight)
+                else:
+                    wind_timeline = generate_daily_wind()
+
+                # Handle cold fronts/heat waves with continuity
+                cold_front_days = (
+                    prev_weather["cold_front_days_remaining"] if prev_weather else 0
+                )
+                heat_wave_days = (
+                    prev_weather["heat_wave_days_remaining"] if prev_weather else 0
+                )
+
+                # Roll weather
+                weather_type = roll_weather_condition(season)
+
+                (
+                    actual_temp,
+                    temp_category,
+                    _temp_description,  # Unused in this context
+                    temp_roll,
+                    cold_front_remaining,
+                    heat_wave_remaining,
+                ) = roll_temperature_with_special_events(
+                    season, province, cold_front_days, heat_wave_days
+                )
+
+                # Save weather data
+                weather_data = {
+                    "season": season,
+                    "province": province,
+                    "wind_timeline": wind_timeline,
+                    "weather_type": weather_type,
+                    "weather_roll": 0,
+                    "temperature_actual": actual_temp,
+                    "temperature_category": temp_category,
+                    "temperature_roll": temp_roll,
+                    "cold_front_days_remaining": cold_front_remaining,
+                    "heat_wave_days_remaining": heat_wave_remaining,
+                }
+                storage.save_daily_weather(guild_id, day_num, weather_data)
+
+                stage_weathers.append((day_num, weather_data))
+
+            # Get display mode preference
+            display_mode = journey.get("stage_display_mode", "simple")
+
+            # Display stage summary or detailed view based on preference
+            if display_mode == "detailed":
+                await _display_stage_detailed(
+                    context,
+                    new_stage,
+                    new_day,
+                    stage_duration,
+                    season,
+                    province,
+                    stage_weathers,
+                    is_slash,
+                )
+            else:
+                await _display_stage_summary(
+                    context,
+                    new_stage,
+                    new_day,
+                    stage_duration,
+                    season,
+                    province,
+                    stage_weathers,
+                    is_slash,
+                )
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            await _send_error(context, f"Error generating stage: {str(e)}", is_slash)
 
     async def _start_new_journey(
         context, guild_id: str, season: str, province: str, is_slash: bool
@@ -619,6 +741,189 @@ def setup(bot: commands.Bot):
         else:
             await context.send(embed=embed)
 
+    async def _display_stage_detailed(
+        context,
+        stage_num: int,
+        start_day: int,
+        stage_duration: int,
+        season: str,
+        province: str,
+        stage_weathers: list,
+        is_slash: bool,
+    ):
+        """Display detailed weather information for each day in a stage."""
+        end_day = start_day + stage_duration - 1
+
+        embed = discord.Embed(
+            title=f"🗺️ Stage {stage_num} Complete (Days {start_day}-{end_day})",
+            description=f"**{season.title()}** in **{province.replace('_', ' ').title()}**\n\nDetailed weather for {stage_duration} days of travel.",
+            color=discord.Color.purple(),
+        )
+
+        # Add detailed info for each day
+        for day_num, weather_data in stage_weathers:
+            weather_type = weather_data["weather_type"]
+            weather_emoji = get_weather_emoji(weather_type)
+            actual_temp = weather_data["temperature_actual"]
+            temp_emoji = get_temperature_emoji(actual_temp)
+            temp_category = weather_data["temperature_category"]
+
+            weather_effects = get_weather_effects(weather_type)
+
+            # Wind timeline
+            wind_timeline = weather_data["wind_timeline"]
+            dawn_wind = wind_timeline[0]
+            noon_wind = wind_timeline[1]
+            dusk_wind = wind_timeline[2]
+            midnight_wind = wind_timeline[3]
+
+            def format_wind(wind):
+                strength_name = WIND_STRENGTH.get(wind["strength"], "Unknown")
+                return f"🌀 {strength_name}"
+
+            wind_text = (
+                f"🌅 Dawn: {format_wind(dawn_wind)} | "
+                f"☀️ Noon: {format_wind(noon_wind)}\n"
+                f"🌇 Dusk: {format_wind(dusk_wind)} | "
+                f"🌙 Midnight: {format_wind(midnight_wind)}"
+            )
+
+            # Weather effects with formatted modifiers
+            effects_text = f"{weather_emoji} **{weather_effects['name']}**"
+            if weather_effects["modifier"]:
+                modifier_display = _format_modifier_for_display(
+                    weather_effects["modifier"]
+                )
+                effects_text += f"\n{modifier_display}"
+
+            # Temperature info
+            temp_text = f"{temp_emoji} **{actual_temp}°C** ({temp_category.title()})"
+
+            # Special events
+            special_events = []
+            if weather_data["cold_front_days_remaining"] > 0:
+                special_events.append(
+                    f"❄️ **Cold Front** (Day {weather_data['cold_front_days_remaining']} of 3+): "
+                    f"-10°C temperature modifier"
+                )
+            if weather_data["heat_wave_days_remaining"] > 0:
+                special_events.append(
+                    f"🔥 **Heat Wave** (Day {weather_data['heat_wave_days_remaining']} of 3+): "
+                    f"+10°C temperature modifier"
+                )
+
+            # Combine all info
+            day_info = f"{effects_text}\n" f"{temp_text}\n" f"{wind_text}"
+            if special_events:
+                day_info += "\n" + "\n".join(special_events)
+
+            embed.add_field(
+                name=f"📅 Day {day_num}",
+                value=day_info,
+                inline=False,
+            )
+
+        # Add navigation info
+        embed.add_field(
+            name="📖 Next Steps",
+            value=(
+                f"• Use `/weather view {start_day}` to see weather for any specific day\n"
+                f"• Use `/weather next-stage` to advance to Stage {stage_num + 1}\n"
+                f"• Use `/weather next` for day-by-day progression\n"
+                f"• Use `/weather-stage-config display_mode:simple` to switch to summary view"
+            ),
+            inline=False,
+        )
+
+        # Footer
+        if is_slash:
+            embed.set_footer(text=f"Generated by {context.user.display_name}")
+        else:
+            embed.set_footer(text=f"Generated by {context.author.display_name}")
+
+        # Send embed
+        if is_slash:
+            if hasattr(context, "response") and not context.response.is_done():
+                await context.response.send_message(embed=embed)
+            else:
+                await context.followup.send(embed=embed)
+        else:
+            await context.send(embed=embed)
+
+    async def _display_stage_summary(
+        context,
+        stage_num: int,
+        start_day: int,
+        stage_duration: int,
+        season: str,
+        province: str,
+        stage_weathers: list,
+        is_slash: bool,
+    ):
+        """Display summary of a multi-day stage."""
+        end_day = start_day + stage_duration - 1
+
+        embed = discord.Embed(
+            title=f"🗺️ Stage {stage_num} Complete (Days {start_day}-{end_day})",
+            description=f"**{season.title()}** in **{province.replace('_', ' ').title()}**\n\nWeather generated for {stage_duration} days of travel.",
+            color=discord.Color.purple(),
+        )
+
+        # Add summary for each day
+        for day_num, weather_data in stage_weathers:
+            weather_type = weather_data["weather_type"]
+            weather_emoji = get_weather_emoji(weather_type)
+            actual_temp = weather_data["temperature_actual"]
+            temp_emoji = get_temperature_emoji(actual_temp)
+
+            # Get wind summary (most common wind) - not used in display but kept for future
+            wind_timeline = weather_data["wind_timeline"]
+            wind_strengths = [w["strength"] for w in wind_timeline]
+            _most_common_wind = max(set(wind_strengths), key=wind_strengths.count)
+
+            weather_effects = get_weather_effects(weather_type)
+
+            day_summary = f"{weather_emoji} {weather_effects['name']} | {temp_emoji} {actual_temp}°C"
+
+            # Add special events
+            if weather_data["cold_front_days_remaining"] > 0:
+                day_summary += " | ❄️ Cold Front"
+            if weather_data["heat_wave_days_remaining"] > 0:
+                day_summary += " | 🔥 Heat Wave"
+
+            embed.add_field(
+                name=f"Day {day_num}",
+                value=day_summary,
+                inline=False,
+            )
+
+        # Add navigation info
+        embed.add_field(
+            name="📖 Next Steps",
+            value=(
+                f"• Use `/weather view {start_day}` to see detailed weather for any day\n"
+                f"• Use `/weather next-stage` to advance to Stage {stage_num + 1}\n"
+                f"• Use `/weather next` for day-by-day progression\n"
+                f"• Use `/weather-stage-config display_mode:detailed` to see full weather info"
+            ),
+            inline=False,
+        )
+
+        # Footer
+        if is_slash:
+            embed.set_footer(text=f"Generated by {context.user.display_name}")
+        else:
+            embed.set_footer(text=f"Generated by {context.author.display_name}")
+
+        # Send embed
+        if is_slash:
+            if hasattr(context, "response") and not context.response.is_done():
+                await context.response.send_message(embed=embed)
+            else:
+                await context.followup.send(embed=embed)
+        else:
+            await context.send(embed=embed)
+
     async def _send_error(context, message: str, is_slash: bool):
         """Send error message."""
         embed = discord.Embed(
@@ -646,6 +951,199 @@ def setup(bot: commands.Bot):
                 await context.followup.send(embed=embed, ephemeral=True)
         else:
             await context.send(embed=embed)
+
+    # Slash command for stage configuration (GM only)
+    @bot.tree.command(
+        name="weather-stage-config",
+        description="[GM] Configure stage duration and display mode for multi-day travel",
+    )
+    @app_commands.describe(
+        stage_duration="Number of days per stage (default: 3, range: 1-10)",
+        display_mode="How to show stage weather: 'simple' (summary) or 'detailed' (full weather for each day)",
+    )
+    @app_commands.choices(
+        display_mode=[
+            app_commands.Choice(name="Simple Summary", value="simple"),
+            app_commands.Choice(name="Detailed (All Days)", value="detailed"),
+        ]
+    )
+    async def weather_stage_config_slash(
+        interaction: discord.Interaction,
+        stage_duration: int = None,
+        display_mode: str = None,
+    ):
+        """Configure stage duration and display mode (GM only)."""
+        await _configure_stage_duration(
+            interaction, stage_duration, display_mode, is_slash=True
+        )
+
+    # Prefix command for stage configuration
+    @bot.command(name="weather-stage-config")
+    async def weather_stage_config_prefix(
+        ctx,
+        stage_duration: int = None,
+        display_mode: str = None,
+    ):
+        """Configure stage duration and display mode (GM only)."""
+        await _configure_stage_duration(
+            ctx, stage_duration, display_mode, is_slash=False
+        )
+
+    async def _configure_stage_duration(
+        context, stage_duration: int, display_mode: str, is_slash: bool
+    ):
+        """Configure stage duration and display mode for journey (GM only)."""
+        try:
+            # Check GM permissions
+            user = context.user if is_slash else context.author
+            if context.guild and not is_gm(user):
+                error_msg = "❌ Only the server owner or users with the GM role can configure stage settings."
+                await _send_error(context, error_msg, is_slash)
+                return
+
+            guild_id = str(context.guild.id) if context.guild else None
+            if not guild_id:
+                await _send_error(
+                    context, "This command must be used in a server.", is_slash
+                )
+                return
+
+            storage = WeatherStorage()
+            journey = storage.get_journey_state(guild_id)
+
+            if not journey:
+                await _send_error(
+                    context,
+                    "❌ No journey in progress. Start a journey first with `/weather journey`.",
+                    is_slash,
+                )
+                return
+
+            # Track what was updated
+            updates = []
+
+            # Update stage duration if provided
+            if stage_duration is not None:
+                # Validate stage duration
+                if stage_duration < 1 or stage_duration > 10:
+                    await _send_error(
+                        context,
+                        "❌ Stage duration must be between 1 and 10 days.",
+                        is_slash,
+                    )
+                    return
+                storage.update_stage_duration(guild_id, stage_duration)
+                updates.append(f"Stage duration: **{stage_duration} days** per stage")
+            else:
+                stage_duration = journey["stage_duration"]
+
+            # Update display mode if provided
+            if display_mode is not None:
+                # Validate display mode
+                if display_mode not in ["simple", "detailed"]:
+                    await _send_error(
+                        context,
+                        "❌ Display mode must be 'simple' or 'detailed'.",
+                        is_slash,
+                    )
+                    return
+                storage.update_stage_display_mode(guild_id, display_mode)
+                mode_label = (
+                    "Simple Summary"
+                    if display_mode == "simple"
+                    else "Detailed (All Days)"
+                )
+                updates.append(f"Display mode: **{mode_label}**")
+            else:
+                display_mode = journey.get("stage_display_mode", "simple")
+                mode_label = (
+                    "Simple Summary"
+                    if display_mode == "simple"
+                    else "Detailed (All Days)"
+                )
+
+            # If nothing was provided, show current config
+            if not updates:
+                embed = discord.Embed(
+                    title="⚙️ Current Stage Configuration",
+                    description=f"Current journey state:\n"
+                    f"• Day: {journey['current_day']}\n"
+                    f"• Stage: {journey['current_stage']}\n"
+                    f"• Season: {journey['season'].title()}\n"
+                    f"• Province: {journey['province'].replace('_', ' ').title()}\n\n"
+                    f"**Stage Settings:**\n"
+                    f"• Stage Duration: **{stage_duration} days** per stage\n"
+                    f"• Display Mode: **{mode_label}**",
+                    color=discord.Color.blue(),
+                )
+            else:
+                # Confirmation message
+                embed = discord.Embed(
+                    title="⚙️ Stage Configuration Updated",
+                    description="\n".join(updates) + f"\n\nCurrent journey state:\n"
+                    f"• Day: {journey['current_day']}\n"
+                    f"• Stage: {journey['current_stage']}\n"
+                    f"• Season: {journey['season'].title()}\n"
+                    f"• Province: {journey['province'].replace('_', ' ').title()}",
+                    color=discord.Color.green(),
+                )
+
+            embed.add_field(
+                name="💡 Display Modes",
+                value=(
+                    "**Simple:** Shows brief summary (weather type, temp, special events)\n"
+                    "**Detailed:** Shows full weather info for each day (wind, conditions, effects)"
+                ),
+                inline=False,
+            )
+
+            embed.add_field(
+                name="📖 Usage",
+                value=(
+                    f"When you use `/weather next-stage`, the journey will advance by {stage_duration} days.\n"
+                    f"Weather will be displayed in **{mode_label}** format."
+                ),
+                inline=False,
+            )
+
+            if is_slash:
+                await context.response.send_message(embed=embed)
+            else:
+                await context.send(embed=embed)
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            await _send_error(
+                context, f"Error configuring stage settings: {str(e)}", is_slash
+            )
+
+
+def _format_modifier_for_display(modifier_str: str) -> str:
+    """
+    Format wind modifier for clearer display in notifications.
+
+    Args:
+        modifier_str: Raw modifier string like "-10 penalty, 25% speed" or "+10%"
+
+    Returns:
+        Formatted string with clear explanations
+    """
+    if "penalty" in modifier_str.lower():
+        # Parse "−10 penalty, 25% speed"
+        parts = modifier_str.split(",")
+        penalty_part = parts[0].strip()
+        speed_part = parts[1].strip() if len(parts) > 1 else None
+
+        # Extract the penalty number
+        penalty_num = penalty_part.split()[0]  # e.g., "-10"
+
+        result = f"**Movement Speed:** {speed_part}\n"
+        result += f"  └─ **Boat Handling Tests:** {penalty_num}"
+        return result
+    elif modifier_str == "—":
+        return "No modifier to movement or tests"
+    else:
+        # Simple percentage like "+10%" or "-5%"
+        return f"**Movement Speed:** {modifier_str}"
 
 
 async def send_mechanics_notification(
@@ -690,7 +1188,11 @@ async def send_mechanics_notification(
             wind_modifiers_text += (
                 f"**{wind_entry['time']}:** {strength_name} {direction_name}\n"
             )
-            wind_modifiers_text += f"  └─ {modifiers['modifier']}\n"
+
+            # Parse and format the modifier for clarity
+            modifier_str = modifiers["modifier"]
+            formatted_modifier = _format_modifier_for_display(modifier_str)
+            wind_modifiers_text += f"  └─ {formatted_modifier}\n"
 
             if modifiers["notes"]:
                 wind_modifiers_text += f"  └─ *{modifiers['notes']}*\n"
