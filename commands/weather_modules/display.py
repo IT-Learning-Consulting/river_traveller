@@ -84,7 +84,9 @@ class WeatherDisplayManager:
         season = weather_data.get("season", "spring")
         weather_type = weather_data.get("weather_type", "fair")
         weather_effects = weather_data.get("weather_effects", [])
-        temperature = weather_data.get("temperature", 15)
+        temperature = weather_data.get(
+            "actual_temp", weather_data.get("temperature", 15)
+        )
         wind_timeline = weather_data.get("wind_timeline", {})
 
         # Format display names
@@ -138,52 +140,52 @@ class WeatherDisplayManager:
         return embed
 
     @staticmethod
-    def _format_wind_conditions(wind_timeline: Dict[str, Dict[str, Any]]) -> str:
+    def _format_wind_conditions(wind_timeline) -> str:
         """
         Format wind conditions for display in an embed field.
 
         Args:
-            wind_timeline: Dictionary with wind data for each time of day
-                Format: {
-                    'dawn': {'strength': str, 'direction': str, 'modifier': str},
-                    'morning': {...}, etc.
-                }
+            wind_timeline: List of dicts with wind data for each time period
+                Format: [
+                    {'time': 'Dawn', 'strength': str, 'direction': str, 'changed': bool},
+                    {'time': 'Midday', ...}, etc.
+                ]
 
         Returns:
             str: Formatted wind conditions text
         """
         if not wind_timeline:
-            return "🌊 Calm - No wind\n`+0` to Boat Handling"
+            return "🌊 Calm throughout the day"
+
+        # Check if all periods have same wind
+        all_same = all(
+            w["strength"] == wind_timeline[0]["strength"]
+            and w["direction"] == wind_timeline[0]["direction"]
+            for w in wind_timeline
+        )
+
+        if all_same and wind_timeline[0]["strength"] == "calm":
+            return "🌊 Calm throughout the day"
 
         lines = []
-        time_order = ["dawn", "morning", "afternoon", "evening", "night"]
-
-        for time_of_day in time_order:
-            if time_of_day not in wind_timeline:
-                continue
-
-            wind_data = wind_timeline[time_of_day]
+        for wind_data in wind_timeline:
+            time_display = wind_data.get("time", "").title()
             strength = wind_data.get("strength", "calm")
             direction = wind_data.get("direction", "")
-            modifier = wind_data.get("modifier", "+0")
 
-            # Capitalize time of day for display
-            time_display = time_of_day.capitalize()
+            # Format strength and direction for display
+            strength_display = strength.replace("_", " ").title()
+            direction_display = direction.replace("_", " ").title()
 
-            # Format the modifier
-            modifier_display = WeatherFormatters.format_modifier_for_display(modifier)
-
-            # Create line with strength and direction
+            # Create line
             if strength.lower() == "calm":
-                lines.append(f"**{time_display}:** Calm `+0`")
+                lines.append(f"**{time_display}:** Calm")
             else:
-                # Capitalize strength for display
-                strength_display = strength.replace("_", " ").title()
                 lines.append(
-                    f"**{time_display}:** {strength_display} {direction} `{modifier_display}`"
+                    f"**{time_display}:** {strength_display} {direction_display}"
                 )
 
-        return "\n".join(lines) if lines else "🌊 Calm throughout the day"
+        return "\n".join(lines)
 
     @staticmethod
     def _format_weather_condition(weather_type: str, weather_effects: List[str]) -> str:
@@ -243,18 +245,28 @@ class WeatherDisplayManager:
         Returns:
             str: Formatted temperature text
         """
-        temperature = weather_data.get("temperature", 15)
-        wind_chill = weather_data.get("wind_chill")
-        wind_chill_note = weather_data.get("wind_chill_note", "")
+        # Get actual and perceived temperatures
+        actual_temp = weather_data.get(
+            "actual_temp", weather_data.get("temperature", 15)
+        )
+        perceived_temp = weather_data.get("perceived_temp", actual_temp)
+        temp_description = weather_data.get("temp_description", "")
+        temp_category = weather_data.get("temp_category", "")
 
-        # Base temperature
-        temp_text = f"**{temperature}°C**"
+        # Base temperature with category
+        if temp_category:
+            category_display = temp_category.replace("_", " ").title()
+            temp_text = f"**{actual_temp}°C** ({category_display} for the season)"
+        else:
+            temp_text = f"**{actual_temp}°C**"
+
+        # Add description if available
+        if temp_description:
+            temp_text += f"\n*{temp_description}*"
 
         # Add wind chill if different from base temperature
-        if wind_chill is not None and wind_chill != temperature:
-            temp_text += f"\n*Feels like {wind_chill}°C*"
-            if wind_chill_note:
-                temp_text += f"\n_{wind_chill_note}_"
+        if perceived_temp != actual_temp:
+            temp_text += f"\n**Feels like: {perceived_temp}°C** (feels {abs(perceived_temp - actual_temp)}°C {'colder' if perceived_temp < actual_temp else 'warmer'} due to {'Strong' if abs(perceived_temp - actual_temp) >= 10 else ''} wind)"
 
         return temp_text
 
@@ -270,14 +282,15 @@ class WeatherDisplayManager:
             embed: The embed to send
             is_slash: Whether this is a slash command
         """
-        if is_slash:
-            # Slash command - use interaction response
+        # Auto-detect if is_slash parameter is incorrect by checking context type
+        if hasattr(context, "response"):
+            # This is an Interaction (slash command)
             if context.response.is_done():
                 await context.followup.send(embed=embed)
             else:
                 await context.response.send_message(embed=embed)
         else:
-            # Prefix command - use channel send
+            # This is a Context (prefix command)
             await context.send(embed=embed)
 
     @staticmethod

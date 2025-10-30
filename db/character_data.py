@@ -71,6 +71,8 @@ characters_data = {
             "Perception": 50,
             "Dodge": 41,
             "Lore (Geography)": 50,
+            "Lore (Riverways)": None,
+            "Sail": 30,
         },
     },
     "hildric": {
@@ -236,11 +238,12 @@ def get_lore_riverways_bonus(character: Dict[str, Any]) -> int:
         character: Character data dictionary
 
     Returns:
-        Bonus value (0 if skill not present)
+        Bonus value (0 if skill not present or None)
 
     Example:
         Lore (Riverways) 47 -> bonus of +4
+        Lore (Riverways) None -> bonus of 0
     """
     river_skills = character.get("river_travelling_skills", {})
     lore_riverways = river_skills.get("Lore (Riverways)", 0)
-    return lore_riverways // 10 if lore_riverways > 0 else 0
+    return lore_riverways // 10 if (lore_riverways and lore_riverways > 0) else 0

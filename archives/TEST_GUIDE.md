@@ -12,17 +12,17 @@ This guide provides comprehensive test cases for all bot commands. Use this to v
 ## ✅ Pre-Testing Setup
 
 ### Requirements
-- [ ] Bot is online and connected to Discord
-- [ ] Test server has the following channels:
+- [X] Bot is online and connected to Discord
+- [X] Test server has the following channels:
   - Player channel (for commands)
   - `#boat-travelling-notifications` (GM channel)
 - [ ] Test user has GM role (for testing restricted features)
 - [ ] Test user without GM role available (for permission testing)
 
 ### Initial State
-- [ ] No active journey (run `/weather end` if needed)
-- [ ] Bot responds to commands
-- [ ] All 7 commands synced (check console: "Synced X command(s)")
+- [X] No active journey (run `/weather end` if needed)
+- [X] Bot responds to commands
+- [X] All 7 commands synced (check console: "Synced X command(s)")
 
 ---
 
@@ -35,26 +35,26 @@ This guide provides comprehensive test cases for all bot commands. Use this to v
 #### TC-R01: Basic Dice Roll
 - **Command:** `/roll dice:1d100`
 - **Expected:** 
-  - [ ] Embed displays with dice roll results
-  - [ ] Shows "Roll: 1d100"
-  - [ ] Shows result number (1-100)
-  - [ ] Shows total
-  - [ ] Footer shows roller's name
+  - [X] Embed displays with dice roll results
+  - [X] Shows "Roll: 1d100"
+  - [X] Shows result number (1-100)
+  - [X] Shows total
+  - [X] Footer shows roller's name
 
 #### TC-R02: Multiple Dice
 - **Command:** `/roll dice:3d10`
 - **Expected:**
-  - [ ] Shows individual results [X, Y, Z]
-  - [ ] Shows correct total
-  - [ ] No WFRP special rules (no target provided)
+  - [X] Shows individual results [X, Y, Z]
+  - [X] Shows correct total
+  - [X] No WFRP special rules (no target provided)
 
 #### TC-R03: Dice with Modifier (Addition)
 - **Command:** `/roll dice:2d6+5`
 - **Expected:**
-  - [ ] Shows "Roll: 2d6+5"
-  - [ ] Shows individual dice results
-  - [ ] Shows "Dice Modifier: +5"
-  - [ ] Total = sum of dice + 5
+  - [X] Shows "Roll: 2d6+5"
+  - [X] Shows individual dice results
+  - [X] Shows "Dice Modifier: +5"
+  - [X] Total = sum of dice + 5
 
 #### TC-R04: Dice with Modifier (Subtraction)
 - **Command:** `/roll dice:1d20-3`
@@ -66,51 +66,51 @@ This guide provides comprehensive test cases for all bot commands. Use this to v
 #### TC-R05: WFRP Skill Test (Average Difficulty)
 - **Command:** `/roll dice:1d100 target:45 modifier:20`
 - **Expected:**
-  - [ ] Shows WFRP Target section
-  - [ ] Shows "Skill: 45 | Difficulty: Average (+20)"
-  - [ ] Shows "Final Target: 65" (45 + 20)
-  - [ ] If doubles rolled, shows crit/fumble appropriately
+  - [X] Shows WFRP Target section
+  - [X] Shows "Skill: 45 | Difficulty: Average (+20)"
+  - [X] Shows "Final Target: 65" (45 + 20)
+  - [X] If doubles rolled, shows crit/fumble appropriately
 
 #### TC-R06: WFRP Skill Test (Hard Difficulty)
 - **Command:** `/roll dice:1d100 target:45 modifier:-20`
 - **Expected:**
-  - [ ] Shows "Difficulty: Hard (-20)"
-  - [ ] Shows "Final Target: 25" (45 - 20)
-  - [ ] Correct crit/fumble detection based on 25 target
+  - [X] Shows "Difficulty: Hard (-20)"
+  - [X] Shows "Final Target: 25" (45 - 20)
+  - [X] Correct crit/fumble detection based on 25 target
 
 #### TC-R07: WFRP Critical Success (Manual)
 - **Command:** Roll until you get doubles ≤ target (e.g., 22 with target 50)
 - **Expected:**
-  - [ ] Shows "⚡ Doubles!" section
-  - [ ] Shows "🎉 Critical Success!"
-  - [ ] Embed color changes to green
+  - [X] Shows "⚡ Doubles!" section
+  - [X] Shows "🎉 Critical Success!"
+  - [X] Embed color changes to green
 
 #### TC-R08: WFRP Fumble (Manual)
 - **Command:** Roll until you get doubles > target (e.g., 88 with target 50)
 - **Expected:**
-  - [ ] Shows "⚡ Doubles!" section
-  - [ ] Shows "💀 Fumble!"
-  - [ ] Embed color changes to dark red
+  - [X] Shows "⚡ Doubles!" section
+  - [X] Shows "💀 Fumble!"
+  - [X] Embed color changes to dark red
 
 #### TC-R09: WFRP Roll 100 (Always Fumble)
 - **Command:** Keep rolling until you get 100 (or note when you see it)
 - **Expected:**
-  - [ ] Always shows fumble, regardless of target
-  - [ ] Even if target is 100+
+  - [X] Always shows fumble, regardless of target
+  - [X] Even if target is 100+
 
 #### TC-R10: Invalid Dice Notation
 - **Command:** `/roll dice:banana`
 - **Expected:**
-  - [ ] Error embed: "❌ Invalid Dice Notation"
-  - [ ] Shows examples of valid notation
-  - [ ] Ephemeral message (only visible to user)
+  - [X] Error embed: "❌ Invalid Dice Notation"
+  - [X] Shows examples of valid notation
+  - [X] Ephemeral message (only visible to user)
 
 #### TC-R11: Large Dice Pool
 - **Command:** `/roll dice:25d6`
 - **Expected:**
-  - [ ] Shows "*25 dice rolled*" instead of individual results
-  - [ ] Correct total calculated
-  - [ ] No performance issues
+  - [X] Shows "*25 dice rolled*" instead of individual results
+  - [X] Correct total calculated
+  - [X] No performance issues
 
 ---
 
@@ -123,12 +123,12 @@ This guide provides comprehensive test cases for all bot commands. Use this to v
 #### TC-B01: Basic Boat Handling Test
 - **Command:** `/boat-handling character:anara`
 - **Expected:**
-  - [ ] Shows character name: "Anara of Sānxiá"
-  - [ ] Shows skill used (Row or Sail based on wind)
-  - [ ] Shows base skill value
-  - [ ] Shows d100 roll result
-  - [ ] Shows success/failure
-  - [ ] If no active weather, uses default calm conditions
+  - [X] Shows character name: "Anara of Sānxiá"
+  - [X] Shows skill used (Row or Sail based on wind)
+  - [X] Shows base skill value
+  - [X] Shows d100 roll result
+  - [X] Shows success/failure
+  - [X] If no active weather, uses default calm conditions
 
 #### TC-B02: Test Each Character
 - **Commands:** Test all five characters:
@@ -138,89 +138,89 @@ This guide provides comprehensive test cases for all bot commands. Use this to v
   - `/boat-handling character:oktavian`
   - `/boat-handling character:lupus`
 - **Expected:**
-  - [ ] Each character displays correct name
-  - [ ] Each shows their specific skill values
-  - [ ] All have Lore (Riverways) bonus if applicable
-  - [ ] All calculate correctly
+  - [X] Each character displays correct name
+  - [X] Each shows their specific skill values
+  - [X] All have Lore (Riverways) bonus if applicable
+  - [X] All calculate correctly
 
 #### TC-B03: Difficulty Modifier
 - **Command:** `/boat-handling character:anara difficulty:-20`
 - **Expected:**
-  - [ ] Shows "Hard (-20)" difficulty
-  - [ ] Target reduced by 20 from base skill
-  - [ ] Correct success/failure calculation
+  - [X] Shows "Hard (-20)" difficulty
+  - [X] Target reduced by 20 from base skill
+  - [X] Correct success/failure calculation
 
 #### TC-B04: Time of Day - Dawn
 - **Command:** `/boat-handling character:emmerich time_of_day:dawn`
 - **Expected:**
-  - [ ] Uses dawn wind conditions from weather
-  - [ ] If no weather: defaults to calm
-  - [ ] Shows time in embed or context
+  - [X] Uses dawn wind conditions from weather
+  - [X] If no weather: defaults to calm
+  - [X] Shows time in embed or context
 
 #### TC-B05: Time of Day - Midday
 - **Command:** `/boat-handling character:hildric time_of_day:midday`
 - **Expected:**
-  - [ ] Uses midday wind conditions (default)
-  - [ ] Appropriate modifiers applied
+  - [X] Uses midday wind conditions (default)
+  - [X] Appropriate modifiers applied
 
 #### TC-B06: Time of Day - Dusk
 - **Command:** `/boat-handling character:oktavian time_of_day:dusk`
 - **Expected:**
-  - [ ] Uses dusk wind conditions
-  - [ ] Correct wind-based modifiers
+  - [X] Uses dusk wind conditions
+  - [X] Correct wind-based modifiers
 
 #### TC-B07: Time of Day - Midnight
 - **Command:** `/boat-handling character:lupus time_of_day:midnight`
 - **Expected:**
-  - [ ] Uses midnight wind conditions
-  - [ ] Correct modifiers
+  - [X] Uses midnight wind conditions
+  - [X] Correct modifiers
 
 #### TC-B08: With Active Weather Journey
 - **Setup:** Start a journey first: `/weather journey season:summer province:reikland`
 - **Command:** `/boat-handling character:anara time_of_day:midday`
 - **Expected:**
-  - [ ] Shows "Weather Impact" section
-  - [ ] Shows current wind conditions
-  - [ ] Shows weather-based modifiers
-  - [ ] Boat handling penalty applied to difficulty
-  - [ ] Modified target calculated correctly
+  - [X] Shows "Weather Impact" section
+  - [X] Shows current wind conditions
+  - [X] Shows weather-based modifiers
+  - [X] Boat handling penalty applied to difficulty
+  - [X] Modified target calculated correctly
 
 #### TC-B09: Calm Wind (Uses Row)
 - **Setup:** Generate weather until you get calm wind
 - **Command:** `/boat-handling character:anara`
 - **Expected:**
-  - [ ] Uses "Row" skill
-  - [ ] Shows Row skill value
-  - [ ] Explanation mentions calm conditions
+  - [X] Uses "Row" skill
+  - [X] Shows Row skill value
+  - [X] Explanation mentions calm conditions
 
 #### TC-B10: Any Wind (Uses Sail)
 - **Setup:** Generate weather with wind (not calm)
 - **Command:** `/boat-handling character:emmerich`
 - **Expected:**
-  - [ ] Uses "Sail" skill
-  - [ ] Shows Sail skill value
-  - [ ] Includes wind direction and strength
+  - [X] Uses "Sail" skill
+  - [X] Shows Sail skill value
+  - [X] Includes wind direction and strength
 
 #### TC-B11: Invalid Character Name
 - **Command:** `/boat-handling character:gandalf`
 - **Expected:**
-  - [ ] Error message
-  - [ ] Lists available characters
-  - [ ] Ephemeral error (if slash command)
+  - [X] Error message
+  - [X] Lists available characters
+  - [X] Ephemeral error (if slash command)
 
 #### TC-B12: Critical Success (Doubles)
 - **Command:** Roll until doubles ≤ target achieved
 - **Expected:**
-  - [ ] Shows "⚡ Doubles!" section
-  - [ ] Shows "🎉 Critical Success!"
-  - [ ] Green embed color
+  - [X] Shows "⚡ Doubles!" section
+  - [X] Shows "🎉 Critical Success!"
+  - [X] Green embed color
 
 #### TC-B13: Fumble (Doubles)
 - **Command:** Roll until doubles > target achieved
 - **Expected:**
-  - [ ] Shows "⚡ Doubles!" section
-  - [ ] Shows "💀 Fumble!"
-  - [ ] Dark red embed color
+  - [X] Shows "⚡ Doubles!" section
+  - [X] Shows "💀 Fumble!"
+  - [X] Dark red embed color
 
 ---
 
@@ -233,26 +233,26 @@ This guide provides comprehensive test cases for all bot commands. Use this to v
 #### TC-W01: Start New Journey
 - **Command:** `/weather journey season:summer province:reikland`
 - **Expected:**
-  - [ ] Success message: "New journey started"
-  - [ ] Shows season: Summer
-  - [ ] Shows province: Reikland
-  - [ ] Shows starting day: 1
-  - [ ] Initial weather generated for day 1
-  - [ ] Weather displayed with full details
-  - [ ] **GM Channel:** Notification in `#boat-travelling-notifications` with mechanics
+  - [X] Success message: "New journey started"
+  - [X] Shows season: Summer
+  - [X] Shows province: Reikland
+  - [X] Shows starting day: 1
+  - [X] Initial weather generated for day 1
+  - [X] Weather displayed with full details
+  - [X] **GM Channel:** Notification in `#boat-travelling-notifications` with mechanics
 
 #### TC-W02: Generate Next Day Weather
 - **Setup:** Start journey first (TC-W01)
 - **Command:** `/weather next`
 - **Expected:**
-  - [ ] Day increments (Day 2)
-  - [ ] New weather generated
-  - [ ] Shows weather type (Fair, Overcast, Rain, etc.)
-  - [ ] Shows temperature with category
-  - [ ] Shows wind timeline (dawn, midday, dusk, midnight)
-  - [ ] Shows weather effects list
-  - [ ] Shows boat handling modifiers
-  - [ ] **GM Channel:** Mechanics notification sent
+  - [X] Day increments (Day 2)
+  - [X] New weather generated
+  - [X] Shows weather type (Fair, Overcast, Rain, etc.)
+  - [X] Shows temperature with category
+  - [X] Shows wind timeline (dawn, midday, dusk, midnight)
+  - [X] Shows weather effects list
+  - [X] Shows boat handling modifiers
+  - [X] **GM Channel:** Mechanics notification sent
 
 #### TC-W03: Progress Multiple Days
 - **Setup:** Active journey
@@ -267,21 +267,21 @@ This guide provides comprehensive test cases for all bot commands. Use this to v
 - **Setup:** Journey with at least 3 days
 - **Command:** `/weather view day:1`
 - **Expected:**
-  - [ ] Shows weather for day 1
-  - [ ] All details preserved (temperature, wind, effects)
-  - [ ] Matches original day 1 weather
+  - [X] Shows weather for day 1
+  - [X] All details preserved (temperature, wind, effects)
+  - [X] Matches original day 1 weather
 
 #### TC-W05: View Invalid Day
 - **Command:** `/weather view day:999`
 - **Expected:**
-  - [ ] Error message: "No weather data for day 999"
-  - [ ] Suggests checking current day
+  - [X] Error message: "No weather data for day 999"
+  - [X] Suggests checking current day
 
 #### TC-W06: View Without Day Parameter
 - **Command:** `/weather view` (without day parameter)
 - **Expected:**
-  - [ ] Error message: "Day number is required"
-  - [ ] Shows example usage
+  - [X] Error message: "Day number is required"
+  - [X] Shows example usage
 
 #### TC-W07: End Journey
 - **Setup:** Active journey

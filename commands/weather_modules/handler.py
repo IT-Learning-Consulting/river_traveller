@@ -36,9 +36,11 @@ class WeatherCommandHandler:
     def __init__(self):
         """Initialize the handler with required dependencies."""
         self.storage = WeatherStorage()
-        self.display = WeatherDisplayManager()
-        self.stage_display = StageDisplayManager()
-        self.notifications = NotificationManager()
+        # Note: display, stage_display, and notifications are classes with static methods
+        # We reference them directly rather than instantiating
+        self.display = WeatherDisplayManager
+        self.stage_display = StageDisplayManager
+        self.notifications = NotificationManager
 
     async def handle_command(
         self,
@@ -81,6 +83,10 @@ class WeatherCommandHandler:
         handler_func = action_map.get(action)
         if handler_func:
             await handler_func(context, guild_id, season, province, day, is_slash)
+            # Log command after successful execution
+            await self._send_command_log(
+                context, action, season, province, day, is_slash
+            )
         else:
             await self.display.send_error(
                 context, f"Unknown action: {action}", is_slash
@@ -173,28 +179,24 @@ class WeatherCommandHandler:
                     guild_id
                 )  # Refresh after each day
 
-            # Prepare stage data
+            # Prepare stage data for display
             stage_num = journey.get("stage_number", 1)
-            stage_data = {
-                "stage_num": stage_num,
-                "start_day": start_day,
-                "duration": stage_duration,
-                "season": journey["season"],
-                "province": journey["province"],
-                "weathers": stage_weathers,
-            }
+            stage_weathers_list = [weather_data for _, weather_data in stage_weathers]
 
             # Display stage summary
-            await self.stage_display.show_stage_summary(context, stage_data, is_slash)
+            await self.stage_display.show_stage_summary(
+                context, stage_num, stage_weathers_list, is_slash
+            )
 
             # Send stage notification to GM channel
             guild = context.guild if hasattr(context, "guild") else context.guild
             if guild:
+                # Note: total_stages is not tracked, using stage_num as placeholder
                 await self.notifications.send_stage_notification(
                     guild,
                     "boat-travelling-notifications",
                     stage_num,
-                    start_day,
+                    stage_num,  # Using stage_num for total_stages (not tracked)
                     stage_duration,
                 )
 
@@ -500,30 +502,63 @@ class WeatherCommandHandler:
             continuity_note = None
 
         # Generate temperature with special events
+        # Get previous weather and cooldown status
         previous_weather = (
             self.storage.get_daily_weather(guild_id, new_day - 1)
             if new_day > 1
             else None
         )
+
+        # Extract cold front state from previous weather
         cold_front_days = (
-            previous_weather["cold_front_days_remaining"] if previous_weather else 0
+            previous_weather.get("cold_front_days_remaining", 0)
+            if previous_weather
+            else 0
         )
+        cold_front_total = (
+            previous_weather.get("cold_front_total_duration", 0)
+            if previous_weather
+            else 0
+        )
+
+        # Extract heat wave state from previous weather
         heat_wave_days = (
-            previous_weather["heat_wave_days_remaining"] if previous_weather else 0
+            previous_weather.get("heat_wave_days_remaining", 0)
+            if previous_weather
+            else 0
         )
+        heat_wave_total = (
+            previous_weather.get("heat_wave_total_duration", 0)
+            if previous_weather
+            else 0
+        )
+
+        # Get cooldown trackers from journey state
+        journey_state = self.storage.get_journey_state(guild_id)
+        days_since_cf, days_since_hw = self.storage.get_cooldown_status(guild_id)
 
         weather_type = roll_weather_condition(season)
-        weather_effects = get_weather_effects(weather_type)
+        weather_effects_data = get_weather_effects(weather_type)
 
+        # Roll temperature with all context (8 parameters → 8 returns)
         (
             actual_temp,
             temp_category,
             temp_description,
             temp_roll,
             cold_front_remaining,
+            cold_front_total_new,
             heat_wave_remaining,
+            heat_wave_total_new,
         ) = roll_temperature_with_special_events(
-            season, province, cold_front_days, heat_wave_days
+            season,
+            province,
+            cold_front_days,
+            cold_front_total,
+            heat_wave_days,
+            heat_wave_total,
+            days_since_cf,
+            days_since_hw,
         )
 
         base_temp = get_province_base_temperature(province, season)
@@ -531,7 +566,16 @@ class WeatherCommandHandler:
         most_common_wind = max(set(wind_strengths), key=wind_strengths.count)
         perceived_temp = apply_wind_chill(actual_temp, most_common_wind)
 
-        # Save to database
+        # Update cooldown trackers
+        self._update_cooldown_trackers(
+            guild_id,
+            cold_front_days,
+            cold_front_remaining,
+            heat_wave_days,
+            heat_wave_remaining,
+        )
+
+        # Save to database with new fields
         weather_db_data = {
             "season": season,
             "province": province,
@@ -542,7 +586,9 @@ class WeatherCommandHandler:
             "temperature_category": temp_category,
             "temperature_roll": temp_roll,
             "cold_front_days_remaining": cold_front_remaining,
+            "cold_front_total_duration": cold_front_total_new,
             "heat_wave_days_remaining": heat_wave_remaining,
+            "heat_wave_total_duration": heat_wave_total_new,
         }
         self.storage.save_daily_weather(guild_id, new_day, weather_db_data)
 
@@ -553,7 +599,7 @@ class WeatherCommandHandler:
             "province": province,
             "wind_timeline": wind_timeline,
             "weather_type": weather_type,
-            "weather_effects": weather_effects,
+            "weather_effects": weather_effects_data["effects"],
             "actual_temp": actual_temp,
             "perceived_temp": perceived_temp,
             "base_temp": base_temp,
@@ -591,7 +637,7 @@ class WeatherCommandHandler:
             weather_db["province"], weather_db["season"]
         )
 
-        weather_effects = get_weather_effects(weather_db["weather_type"])
+        weather_effects_data = get_weather_effects(weather_db["weather_type"])
 
         # Reconstruct temperature description
         temp_category = weather_db["temperature_category"]
@@ -612,7 +658,7 @@ class WeatherCommandHandler:
             "province": weather_db["province"],
             "wind_timeline": weather_db["wind_timeline"],
             "weather_type": weather_db["weather_type"],
-            "weather_effects": weather_effects,
+            "weather_effects": weather_effects_data["effects"],
             "actual_temp": actual_temp,
             "perceived_temp": perceived_temp,
             "base_temp": base_temp,
@@ -623,3 +669,121 @@ class WeatherCommandHandler:
             "heat_wave_days": weather_db["heat_wave_days_remaining"],
             "continuity_note": None,  # Historical views don't show continuity
         }
+
+    def _update_cooldown_trackers(
+        self,
+        guild_id: str,
+        previous_cold_front_days: int,
+        current_cold_front_days: int,
+        previous_heat_wave_days: int,
+        current_heat_wave_days: int,
+    ):
+        """
+        Update cooldown trackers based on event state transitions.
+
+        Args:
+            guild_id: Guild ID
+            previous_cold_front_days: Days remaining before this generation
+            current_cold_front_days: Days remaining after this generation
+            previous_heat_wave_days: Days remaining before this generation
+            current_heat_wave_days: Days remaining after this generation
+        """
+        # Cold front cooldown logic
+        if current_cold_front_days > 0:
+            # Event is active
+            if previous_cold_front_days == 0:
+                # New event just started - reset cooldown
+                self.storage.reset_cooldown(guild_id, "cold_front")
+            # else: Event was already active - cooldown stays at 0
+        elif previous_cold_front_days > 0 and current_cold_front_days == 0:
+            # Event just ended - start incrementing cooldown
+            self.storage.increment_cooldown(guild_id, "cold_front")
+        elif previous_cold_front_days == 0 and current_cold_front_days == 0:
+            # No event - continue incrementing cooldown
+            self.storage.increment_cooldown(guild_id, "cold_front")
+
+        # Heat wave cooldown logic (same pattern)
+        if current_heat_wave_days > 0:
+            # Event is active
+            if previous_heat_wave_days == 0:
+                # New event just started - reset cooldown
+                self.storage.reset_cooldown(guild_id, "heat_wave")
+            # else: Event was already active - cooldown stays at 0
+        elif previous_heat_wave_days > 0 and current_heat_wave_days == 0:
+            # Event just ended - start incrementing cooldown
+            self.storage.increment_cooldown(guild_id, "heat_wave")
+        elif previous_heat_wave_days == 0 and current_heat_wave_days == 0:
+            # No event - continue incrementing cooldown
+            self.storage.increment_cooldown(guild_id, "heat_wave")
+
+    async def _send_command_log(
+        self,
+        context,
+        action: str,
+        season: Optional[str],
+        province: Optional[str],
+        day: Optional[int],
+        is_slash: bool,
+    ):
+        """Send command details to boat-travelling-log channel."""
+        try:
+            import discord
+
+            # Find the log channel
+            log_channel = discord.utils.get(
+                context.guild.text_channels, name="boat-travelling-log"
+            )
+            if not log_channel:
+                return  # Silently fail if log channel doesn't exist
+
+            # Get username
+            if is_slash:
+                username = context.user.display_name
+                user_id = context.user.id
+            else:
+                username = context.author.display_name
+                user_id = context.author.id
+
+            # Build command string
+            if is_slash:
+                command_str = f"/weather action:{action}"
+                if season:
+                    command_str += f" season:{season}"
+                if province:
+                    command_str += f" province:{province}"
+                if day is not None:
+                    command_str += f" day:{day}"
+            else:
+                command_str = f"!weather {action}"
+                if season:
+                    command_str += f" {season}"
+                if province:
+                    command_str += f" {province}"
+                if day is not None:
+                    command_str += f" {day}"
+
+            # Create log embed
+            log_embed = discord.Embed(
+                title="🌦️ Command Log: Weather",
+                description=f"**User:** {username} (`{user_id}`)\n**Command:** `{command_str}`",
+                color=discord.Color.gold(),
+                timestamp=discord.utils.utcnow(),
+            )
+
+            log_embed.add_field(name="Action", value=action, inline=True)
+            if season:
+                log_embed.add_field(name="Season", value=season.title(), inline=True)
+            if province:
+                log_embed.add_field(
+                    name="Province",
+                    value=province.replace("_", " ").title(),
+                    inline=True,
+                )
+            if day is not None:
+                log_embed.add_field(name="Day", value=str(day), inline=True)
+
+            await log_channel.send(embed=log_embed)
+
+        except (discord.Forbidden, discord.HTTPException, AttributeError):
+            # Silently fail - logging is not critical
+            pass

@@ -129,6 +129,26 @@ def setup(bot: commands.Bot):
                 if target < 1 or target > 100:
                     raise ValueError("Target must be between 1 and 100")
 
+                # Calculate Success Level (SL) - WFRP 4e formula
+                sl = (final_target // 10) - (roll_val // 10)
+                success = roll_val <= final_target
+
+                # Show result with SL
+                if success:
+                    result_text = f"✅ **Success** | SL: **{sl:+d}**"
+                    if (
+                        embed.color == discord.Color.blue()
+                    ):  # Only change if not already changed by doubles
+                        embed.color = discord.Color.green()
+                else:
+                    result_text = f"❌ **Failure** | SL: **{sl:+d}**"
+                    if (
+                        embed.color == discord.Color.blue()
+                    ):  # Only change if not already changed by doubles
+                        embed.color = discord.Color.red()
+
+                embed.add_field(name="Result", value=result_text, inline=False)
+
                 # 100 is always a fumble
                 if roll_val == 100:
                     classification = "fumble"
@@ -159,6 +179,9 @@ def setup(bot: commands.Bot):
                 embed.set_footer(text=f"Rolled by {context.author.display_name}")
                 await context.send(embed=embed)
 
+            # Send command log
+            await _send_command_log(context, dice, target, modifier, is_slash)
+
         except ValueError as e:
             # Handle parsing errors
             error_embed = discord.Embed(
@@ -184,3 +207,58 @@ def setup(bot: commands.Bot):
                 )
             else:
                 await context.send(f"❌ An error occurred: {str(e)}")
+
+    async def _send_command_log(
+        context, dice: str, target: Optional[int], modifier: int, is_slash: bool
+    ):
+        """Send command details to boat-travelling-log channel."""
+        try:
+            # Find the log channel
+            log_channel = discord.utils.get(
+                context.guild.text_channels, name="boat-travelling-log"
+            )
+            if not log_channel:
+                return  # Silently fail if log channel doesn't exist
+
+            # Get username
+            if is_slash:
+                username = context.user.display_name
+                user_id = context.user.id
+            else:
+                username = context.author.display_name
+                user_id = context.author.id
+
+            # Build command string
+            if is_slash:
+                command_str = f"/roll dice:{dice}"
+                if target is not None:
+                    command_str += f" target:{target}"
+                if modifier != 20:
+                    command_str += f" modifier:{modifier}"
+            else:
+                command_str = f"!roll {dice}"
+                if target is not None:
+                    command_str += f" {target}"
+                if modifier != 20:
+                    command_str += f" {modifier}"
+
+            # Create log embed
+            log_embed = discord.Embed(
+                title="🎲 Command Log: Roll",
+                description=f"**User:** {username} (`{user_id}`)\n**Command:** `{command_str}`",
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow(),
+            )
+
+            log_embed.add_field(name="Dice", value=dice, inline=True)
+            if target is not None:
+                log_embed.add_field(name="Target", value=str(target), inline=True)
+                log_embed.add_field(
+                    name="Modifier", value=f"{modifier:+d}", inline=True
+                )
+
+            await log_channel.send(embed=log_embed)
+
+        except (discord.Forbidden, discord.HTTPException, AttributeError):
+            # Silently fail - logging is not critical
+            pass

@@ -112,8 +112,8 @@ class StageDisplayManager:
             str: Condensed weather summary
         """
         weather_type = day_data.get("weather_type", "fair")
-        temperature = day_data.get("temperature", 15)
-        wind_timeline = day_data.get("wind_timeline", {})
+        temperature = day_data.get("actual_temp", day_data.get("temperature", 15))
+        wind_timeline = day_data.get("wind_timeline", [])
         weather_effects = day_data.get("weather_effects", [])
 
         # Get emojis
@@ -139,18 +139,38 @@ class StageDisplayManager:
             else:
                 parts.append(f"⚠️ {len(weather_effects)} weather effects")
 
+        # Add special event information with day counters
+        cold_front_days = day_data.get("cold_front_days_remaining", 0)
+        cold_front_total = day_data.get("cold_front_total_duration", 0)
+        heat_wave_days = day_data.get("heat_wave_days_remaining", 0)
+        heat_wave_total = day_data.get("heat_wave_total_duration", 0)
+
+        if cold_front_days > 0 and cold_front_total > 0:
+            days_elapsed = cold_front_total - cold_front_days + 1
+            event_text = f"❄️ Cold Front (Day {days_elapsed}/{cold_front_total})"
+            if cold_front_days == 1:
+                event_text += " (Final Day)"
+            parts.append(event_text)
+
+        if heat_wave_days > 0 and heat_wave_total > 0:
+            days_elapsed = heat_wave_total - heat_wave_days + 1
+            event_text = f"🔥 Heat Wave (Day {days_elapsed}/{heat_wave_total})"
+            if heat_wave_days == 1:
+                event_text += " (Final Day)"
+            parts.append(event_text)
+
         return "\n".join(parts)
 
     @staticmethod
-    def _format_condensed_wind(wind_timeline: Dict[str, Dict[str, Any]]) -> str:
+    def _format_condensed_wind(wind_timeline) -> str:
         """
         Format wind conditions into a very condensed format for stage view.
 
         Args:
-            wind_timeline: Dictionary with wind data for each time of day
+            wind_timeline: List of wind data dicts with 'time', 'strength', 'direction' keys
 
         Returns:
-            str: Ultra-condensed wind summary (e.g., "Light N → Bracing NE")
+            str: Ultra-condensed wind summary (e.g., "Light Tailwind → Bracing Sidewind")
         """
         if not wind_timeline:
             return "Calm"
@@ -159,12 +179,7 @@ class StageDisplayManager:
         conditions = []
         seen = set()
 
-        time_order = ["dawn", "morning", "afternoon", "evening", "night"]
-        for time_of_day in time_order:
-            if time_of_day not in wind_timeline:
-                continue
-
-            wind_data = wind_timeline[time_of_day]
+        for wind_data in wind_timeline:
             strength = wind_data.get("strength", "calm")
             direction = wind_data.get("direction", "")
 
@@ -174,7 +189,8 @@ class StageDisplayManager:
             else:
                 condition_key = f"{strength}_{direction}"
                 strength_display = strength.replace("_", " ").title()
-                condition_str = f"{strength_display} {direction}"
+                direction_display = direction.replace("_", " ").title()
+                condition_str = f"{strength_display} {direction_display}"
 
             if condition_key not in seen:
                 conditions.append(condition_str)
@@ -309,7 +325,8 @@ class StageDisplayManager:
             embed: The embed to send
             is_slash: Whether this is a slash command
         """
-        if is_slash:
+        # Auto-detect if is_slash parameter is incorrect by checking context type
+        if hasattr(context, "response"):
             if context.response.is_done():
                 await context.followup.send(embed=embed)
             else:

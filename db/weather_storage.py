@@ -43,6 +43,20 @@ class WeatherStorage:
         finally:
             conn.close()
 
+    def _get_table_columns(self, table_name: str) -> Dict[str, str]:
+        """
+        Get column names and types for a table (for testing).
+
+        Args:
+            table_name: Name of the table
+
+        Returns:
+            Dictionary mapping column names to their types
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(f"PRAGMA table_info({table_name})")
+            return {row[1]: row[2] for row in cursor.fetchall()}
+
     def init_database(self):
         """Create tables if they don't exist."""
         with self._get_connection() as conn:
@@ -60,7 +74,9 @@ class WeatherStorage:
                     journey_start_date TEXT,
                     last_weather_date TEXT,
                     season TEXT NOT NULL,
-                    province TEXT NOT NULL
+                    province TEXT NOT NULL,
+                    days_since_last_cold_front INTEGER DEFAULT 99,
+                    days_since_last_heat_wave INTEGER DEFAULT 99
                 )
             """
             )
@@ -99,6 +115,29 @@ class WeatherStorage:
                 # Column already exists
                 pass
 
+            # Add new cooldown tracking columns (Phase 1 migration)
+            try:
+                cursor.execute(
+                    """
+                    ALTER TABLE guild_weather_state 
+                    ADD COLUMN days_since_last_cold_front INTEGER DEFAULT 99
+                    """
+                )
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
+
+            try:
+                cursor.execute(
+                    """
+                    ALTER TABLE guild_weather_state 
+                    ADD COLUMN days_since_last_heat_wave INTEGER DEFAULT 99
+                    """
+                )
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
+
             # Daily weather records table
             cursor.execute(
                 """
@@ -120,12 +159,55 @@ class WeatherStorage:
                     temperature_roll INTEGER NOT NULL,
                     
                     cold_front_days_remaining INTEGER DEFAULT 0,
+                    cold_front_total_duration INTEGER DEFAULT 0,
                     heat_wave_days_remaining INTEGER DEFAULT 0,
+                    heat_wave_total_duration INTEGER DEFAULT 0,
                     
                     UNIQUE(guild_id, day_number),
                     FOREIGN KEY(guild_id) REFERENCES guild_weather_state(guild_id)
                 )
             """
+            )
+
+            # Add new duration tracking columns to daily_weather (Phase 1 migration)
+            try:
+                cursor.execute(
+                    """
+                    ALTER TABLE daily_weather 
+                    ADD COLUMN cold_front_total_duration INTEGER DEFAULT 0
+                    """
+                )
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
+
+            try:
+                cursor.execute(
+                    """
+                    ALTER TABLE daily_weather 
+                    ADD COLUMN heat_wave_total_duration INTEGER DEFAULT 0
+                    """
+                )
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
+
+            # Backfill logic: For active events without total_duration, set total = remaining
+            # This handles the case where we upgrade mid-cold-front
+            cursor.execute(
+                """
+                UPDATE daily_weather 
+                SET cold_front_total_duration = cold_front_days_remaining 
+                WHERE cold_front_days_remaining > 0 AND cold_front_total_duration = 0
+                """
+            )
+
+            cursor.execute(
+                """
+                UPDATE daily_weather 
+                SET heat_wave_total_duration = heat_wave_days_remaining 
+                WHERE heat_wave_days_remaining > 0 AND heat_wave_total_duration = 0
+                """
             )
 
             # Index for faster lookups
@@ -198,8 +280,9 @@ class WeatherStorage:
                 (guild_id, day_number, generated_at, season, province,
                  wind_timeline, weather_type, weather_roll,
                  temperature_actual, temperature_category, temperature_roll,
-                 cold_front_days_remaining, heat_wave_days_remaining)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 cold_front_days_remaining, cold_front_total_duration,
+                 heat_wave_days_remaining, heat_wave_total_duration)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     guild_id,
@@ -214,7 +297,9 @@ class WeatherStorage:
                     weather_data["temperature_category"],
                     weather_data["temperature_roll"],
                     weather_data.get("cold_front_days_remaining", 0),
+                    weather_data.get("cold_front_total_duration", 0),
                     weather_data.get("heat_wave_days_remaining", 0),
+                    weather_data.get("heat_wave_total_duration", 0),
                 ),
             )
 
@@ -492,3 +577,96 @@ class WeatherStorage:
             cursor.execute("SELECT * FROM guild_weather_state")
 
             return [dict(row) for row in cursor.fetchall()]
+
+    # ============================================================================
+    # Phase 1: Cooldown Tracking Methods
+    # ============================================================================
+
+    def get_cooldown_status(self, guild_id: str) -> tuple[int, int]:
+        """
+        Get cooldown status for both event types.
+
+        Args:
+            guild_id: Discord guild ID
+
+        Returns:
+            Tuple of (days_since_last_cold_front, days_since_last_heat_wave)
+            Returns (99, 99) if no journey exists (cooldowns expired/never happened)
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT days_since_last_cold_front, days_since_last_heat_wave 
+                FROM guild_weather_state 
+                WHERE guild_id = ?
+            """,
+                (guild_id,),
+            )
+
+            row = cursor.fetchone()
+            if not row:
+                return 99, 99
+
+            return (
+                row["days_since_last_cold_front"],
+                row["days_since_last_heat_wave"],
+            )
+
+    def increment_cooldown(self, guild_id: str, event_type: str) -> None:
+        """
+        Increment cooldown counter for specific event type.
+
+        Args:
+            guild_id: Discord guild ID
+            event_type: Either "cold_front" or "heat_wave"
+
+        Raises:
+            ValueError: If event_type is not recognized
+        """
+        if event_type not in ["cold_front", "heat_wave"]:
+            raise ValueError(
+                f"Invalid event_type '{event_type}'. Must be 'cold_front' or 'heat_wave'"
+            )
+
+        column_name = f"days_since_last_{event_type}"
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                UPDATE guild_weather_state 
+                SET {column_name} = {column_name} + 1 
+                WHERE guild_id = ?
+            """,
+                (guild_id,),
+            )
+
+    def reset_cooldown(self, guild_id: str, event_type: str) -> None:
+        """
+        Reset cooldown counter to 0 (event just started or ended).
+
+        Args:
+            guild_id: Discord guild ID
+            event_type: Either "cold_front" or "heat_wave"
+
+        Raises:
+            ValueError: If event_type is not recognized
+        """
+        if event_type not in ["cold_front", "heat_wave"]:
+            raise ValueError(
+                f"Invalid event_type '{event_type}'. Must be 'cold_front' or 'heat_wave'"
+            )
+
+        column_name = f"days_since_last_{event_type}"
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                UPDATE guild_weather_state 
+                SET {column_name} = 0 
+                WHERE guild_id = ?
+            """,
+                (guild_id,),
+            )

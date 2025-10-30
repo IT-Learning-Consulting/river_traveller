@@ -42,8 +42,10 @@ class NotificationManager:
                 - province: Province name
                 - season: Season name
                 - weather_type: Type of weather
-                - temperature: Temperature value
-                - wind_timeline: Dict with wind conditions
+                - actual_temp: Actual temperature value
+                - perceived_temp: Perceived temperature with wind chill
+                - temp_category: Temperature category
+                - wind_timeline: List with wind conditions
                 - weather_effects: List of weather effect strings
 
         Returns:
@@ -54,11 +56,11 @@ class NotificationManager:
         if not channel:
             return False
 
-        # Format the notification message
-        message = NotificationManager._format_notification(weather_data)
+        # Create the embed
+        embed = NotificationManager._create_notification_embed(weather_data)
 
         try:
-            await channel.send(message)
+            await channel.send(embed=embed)
             return True
         except discord.Forbidden:
             # Bot doesn't have permission to send messages
@@ -66,6 +68,168 @@ class NotificationManager:
         except discord.HTTPException:
             # Other Discord API error
             return False
+
+    @staticmethod
+    def _create_notification_embed(weather_data: Dict[str, Any]) -> discord.Embed:
+        """
+        Create a detailed GM notification embed with full mechanics.
+
+        Args:
+            weather_data: Dictionary containing weather information
+
+        Returns:
+            discord.Embed: Formatted embed for GM channel
+        """
+        from db.weather_data import WIND_MODIFIERS
+
+        day = weather_data.get("day", 1)
+        province = weather_data.get("province", "Unknown")
+        season = weather_data.get("season", "spring")
+        weather_type = weather_data.get("weather_type", "fair")
+        actual_temp = weather_data.get("actual_temp", 15)
+        perceived_temp = weather_data.get("perceived_temp", actual_temp)
+        temp_category = weather_data.get("temp_category", "")
+        wind_timeline = weather_data.get("wind_timeline", [])
+        weather_effects = weather_data.get("weather_effects", [])
+
+        # Format display names
+        province_name = WeatherFormatters.format_province_name(province)
+        season_name = WeatherFormatters.format_season_name(season)
+        weather_name = weather_type.replace("_", " ").title()
+
+        # Create embed
+        embed = discord.Embed(
+            title="⚠️ Active Weather Mechanics",
+            description=f"Weather conditions for {season_name} in {province_name}",
+            color=discord.Color.gold(),
+        )
+
+        # Boat Handling Modifiers section
+        if wind_timeline:
+            boat_handling_text = NotificationManager._format_boat_handling_modifiers(
+                wind_timeline
+            )
+            embed.add_field(
+                name="🚢 Boat Handling Modifiers",
+                value=boat_handling_text,
+                inline=False,
+            )
+
+        # Active Penalties & Conditions
+        if weather_effects and weather_effects[0] != "No weather-related hazards":
+            effects_text = "\n".join(f"• {effect}" for effect in weather_effects)
+            embed.add_field(
+                name="🎯 Active Penalties & Conditions",
+                value=effects_text,
+                inline=False,
+            )
+
+        # Temperature section
+        if temp_category:
+            category_display = temp_category.replace("_", " ").title()
+            temp_text = f"{category_display} for the season"
+            if perceived_temp != actual_temp:
+                temp_text += (
+                    f"\nActual: {actual_temp}°C, Feels like: {perceived_temp}°C"
+                )
+        else:
+            temp_text = f"{actual_temp}°C"
+
+        embed.add_field(name="🌡️ Temperature", value=temp_text, inline=False)
+
+        # Special Events section
+        cold_front_days = weather_data.get("cold_front_days_remaining", 0)
+        cold_front_total = weather_data.get("cold_front_total_duration", 0)
+        heat_wave_days = weather_data.get("heat_wave_days_remaining", 0)
+        heat_wave_total = weather_data.get("heat_wave_total_duration", 0)
+
+        if cold_front_days > 0 and cold_front_total > 0:
+            days_elapsed = cold_front_total - cold_front_days + 1
+            event_text = f"❄️ **Cold Front: Day {days_elapsed} of {cold_front_total}**\n"
+            event_text += f"• Temperature modifier: -10°C\n"
+
+            if days_elapsed == 1:
+                event_text += "• Sky filled with flocks of emigrating birds\n"
+
+            if cold_front_days == 1:
+                event_text += "• **(Final Day)**"
+
+            embed.add_field(
+                name="🌨️ Special Weather Events",
+                value=event_text.strip(),
+                inline=False,
+            )
+
+        if heat_wave_days > 0 and heat_wave_total > 0:
+            days_elapsed = heat_wave_total - heat_wave_days + 1
+            event_text = f"🔥 **Heat Wave: Day {days_elapsed} of {heat_wave_total}**\n"
+            event_text += f"• Temperature modifier: +10°C\n"
+
+            if heat_wave_days == 1:
+                event_text += "• **(Final Day)**"
+
+            embed.add_field(
+                name="☀️ Special Weather Events",
+                value=event_text.strip(),
+                inline=False,
+            )
+
+        # Notes section
+        embed.add_field(
+            name="💡 Notes",
+            value="• Wind may change at midday, dusk, or midnight (10% chance each check)",
+            inline=False,
+        )
+
+        return embed
+
+    @staticmethod
+    def _format_boat_handling_modifiers(wind_timeline) -> str:
+        """
+        Format detailed boat handling modifiers for GM notification.
+
+        Args:
+            wind_timeline: List of wind conditions for each time period
+
+        Returns:
+            str: Formatted boat handling modifiers with all details
+        """
+        from db.weather_data import WIND_MODIFIERS
+
+        if not wind_timeline:
+            return "Calm conditions: -10 penalty, 25% speed"
+
+        lines = []
+        for wind_data in wind_timeline:
+            time_display = wind_data.get("time", "").title()
+            strength = wind_data.get("strength", "calm")
+            direction = wind_data.get("direction", "")
+
+            # Format strength and direction
+            strength_display = strength.replace("_", " ").title()
+            direction_display = direction.replace("_", " ").title()
+
+            # Get the actual modifiers from the data
+            wind_key = (strength, direction)
+            modifier_data = WIND_MODIFIERS.get(wind_key, ("—", None))
+            modifier = modifier_data[0]
+            notes = modifier_data[1]
+
+            # Build the line
+            if strength == "calm":
+                lines.append(f"**{time_display}:** Calm {direction_display}")
+                lines.append(f"  └─ **Movement Speed:** {modifier}")
+                if notes:
+                    lines.append(f"  └─ *{notes}*")
+            else:
+                lines.append(
+                    f"**{time_display}:** {strength_display} {direction_display}"
+                )
+                lines.append(f"  └─ **Movement Speed:** {modifier}")
+                if notes:
+                    lines.append(f"  └─ *{notes}*")
+
+        return "\n".join(lines)
 
     @staticmethod
     def _format_notification(weather_data: Dict[str, Any]) -> str:

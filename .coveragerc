@@ -8,6 +8,10 @@ omit =
     */venv/*
     setup.py
     */site-packages/*
+    docs/*
+    tasks/*
+    context/*
+    archives/*
     # Exclude Discord command infrastructure
     commands/*
     main.py

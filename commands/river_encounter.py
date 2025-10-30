@@ -389,6 +389,14 @@ def setup_river_encounter(bot: commands.Bot):
         # Send full details to GM notifications channel
         if interaction.guild:
             await send_gm_notification(interaction.guild, encounter_data, stage)
+            # Send command log
+            await _send_command_log(
+                interaction,
+                stage,
+                encounter_type,
+                encounter_data["type"],
+                is_slash=True,
+            )
 
     @bot.command(name="river-encounter")
     async def river_encounter_prefix(
@@ -438,3 +446,70 @@ def setup_river_encounter(bot: commands.Bot):
         # Send full details to GM notifications channel
         if ctx.guild:
             await send_gm_notification(ctx.guild, encounter_data, stage)
+            # Send command log
+            await _send_command_log(
+                ctx, stage, encounter_type, encounter_data["type"], is_slash=False
+            )
+
+
+async def _send_command_log(
+    context,
+    stage: Optional[str],
+    encounter_type_override: Optional[str],
+    actual_type: str,
+    is_slash: bool,
+):
+    """Send command details to boat-travelling-log channel."""
+    try:
+        # Find the log channel
+        log_channel = discord.utils.get(
+            context.guild.text_channels, name="boat-travelling-log"
+        )
+        if not log_channel:
+            return  # Silently fail if log channel doesn't exist
+
+        # Get username
+        if is_slash:
+            username = context.user.display_name
+            user_id = context.user.id
+        else:
+            username = context.author.display_name
+            user_id = context.author.id
+
+        # Build command string
+        if is_slash:
+            command_str = "/river-encounter"
+            if stage:
+                command_str += f" stage:{stage}"
+            if encounter_type_override:
+                command_str += f" encounter_type:{encounter_type_override}"
+        else:
+            command_str = "!river-encounter"
+            if encounter_type_override:
+                command_str += f" {encounter_type_override}"
+            if stage:
+                command_str += f" {stage}"
+
+        # Create log embed
+        log_embed = discord.Embed(
+            title="🌊 Command Log: River Encounter",
+            description=f"**User:** {username} (`{user_id}`)\n**Command:** `{command_str}`",
+            color=discord.Color.teal(),
+            timestamp=discord.utils.utcnow(),
+        )
+
+        if stage:
+            log_embed.add_field(name="Stage", value=stage, inline=True)
+
+        if encounter_type_override:
+            log_embed.add_field(
+                name="Override Type", value=encounter_type_override.title(), inline=True
+            )
+
+        log_embed.add_field(name="Actual Type", value=actual_type.title(), inline=True)
+
+        await log_channel.send(embed=log_embed)
+
+    except (discord.Forbidden, discord.HTTPException, AttributeError):
+        # Silently fail - logging is not critical
+        pass

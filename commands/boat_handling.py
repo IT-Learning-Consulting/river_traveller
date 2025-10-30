@@ -118,7 +118,10 @@ def setup(bot: commands.Bot):
                 raise ValueError(f"{char_name} has no Row or Sail skill!")
 
             # Calculate Lore (Riverways) bonus (first digit)
-            lore_bonus = lore_riverways // 10 if lore_riverways > 0 else 0
+            # Handle None case (skill not learned yet)
+            lore_bonus = (
+                lore_riverways // 10 if (lore_riverways and lore_riverways > 0) else 0
+            )
 
             # Calculate final target
             final_target = base_skill + difficulty + lore_bonus
@@ -128,8 +131,8 @@ def setup(bot: commands.Bot):
             roll_result = random.randint(1, 100)
 
             # Calculate Success Level (SL)
-            # SL = (target - roll) / 10, rounded down
-            sl = (final_target - roll_result) // 10
+            # SL = (tens digit of target) - (tens digit of roll)
+            sl = (final_target // 10) - (roll_result // 10)
 
             # Determine outcome
             if roll_result <= final_target:
@@ -200,26 +203,47 @@ def setup(bot: commands.Bot):
             skill_breakdown = f"**{skill_name}:** {base_skill}"
             if lore_bonus > 0:
                 skill_breakdown += f"\n**Lore (Riverways) Bonus:** +{lore_bonus}"
-            if original_difficulty != 0:
-                difficulty_map = {
-                    -50: "Impossible",
-                    -40: "Futile",
-                    -30: "Very Difficult",
-                    -20: "Hard",
-                    -10: "Difficult",
-                    0: "Challenging",
-                    20: "Average",
-                    40: "Easy",
-                    60: "Very Easy",
-                }
+
+            # Show difficulty (base and modified if weather applies)
+            difficulty_map = {
+                -50: "Impossible",
+                -40: "Futile",
+                -30: "Very Difficult",
+                -20: "Hard",
+                -10: "Difficult",
+                0: "Challenging",
+                20: "Average",
+                40: "Easy",
+                60: "Very Easy",
+            }
+
+            # Always show difficulty if it's not default Challenging or if weather is active
+            if original_difficulty != 0 or weather_mods:
                 diff_name = difficulty_map.get(
                     original_difficulty, f"{original_difficulty:+d}"
                 )
-                skill_breakdown += (
-                    f"\n**Difficulty:** {diff_name} ({original_difficulty:+d})"
-                )
-            if weather_mods and weather_mods["boat_handling_penalty"] != 0:
-                skill_breakdown += f"\n**Weather Modifier:** {weather_mods['boat_handling_penalty']:+d}"
+
+                # Show weather-modified difficulty if weather is active
+                if weather_mods:
+                    if weather_mods["boat_handling_penalty"] != 0:
+                        # Weather has a penalty - show base, modifier, and final
+                        modified_diff_name = difficulty_map.get(
+                            difficulty, f"{difficulty:+d}"
+                        )
+                        skill_breakdown += f"\n**Base Difficulty:** {diff_name} ({original_difficulty:+d})"
+                        skill_breakdown += f"\n**Weather Modifier:** {weather_mods['boat_handling_penalty']:+d}"
+                        skill_breakdown += f"\n**Final Difficulty:** {modified_diff_name} ({difficulty:+d})"
+                    else:
+                        # Weather is active but no penalty
+                        skill_breakdown += (
+                            f"\n**Difficulty:** {diff_name} ({original_difficulty:+d})"
+                        )
+                        skill_breakdown += "\n**Weather Modifier:** 0 (no penalty)"
+                else:
+                    # No weather, just show difficulty
+                    skill_breakdown += (
+                        f"\n**Difficulty:** {diff_name} ({original_difficulty:+d})"
+                    )
 
             embed.add_field(name="Skill Check", value=skill_breakdown, inline=True)
 
@@ -268,6 +292,16 @@ def setup(bot: commands.Bot):
                 embed.set_footer(text=f"Test by {context.author.display_name}")
                 await context.send(embed=embed)
 
+            # Send command log to boat-travelling-log channel
+            await _send_command_log(
+                context,
+                character,
+                difficulty,
+                time_of_day,
+                original_difficulty,
+                is_slash,
+            )
+
         except ValueError as e:
             error_embed = discord.Embed(
                 title="❌ Invalid Boat Handling Test",
@@ -291,3 +325,64 @@ def setup(bot: commands.Bot):
                 )
             else:
                 await context.send(f"❌ An error occurred: {str(e)}")
+
+    async def _send_command_log(
+        context,
+        character: str,
+        difficulty: int,
+        time_of_day: str,
+        original_difficulty: int,
+        is_slash: bool,
+    ):
+        """Send command details to boat-travelling-log channel."""
+        try:
+            # Find the log channel
+            log_channel = discord.utils.get(
+                context.guild.text_channels, name="boat-travelling-log"
+            )
+            if not log_channel:
+                return  # Silently fail if log channel doesn't exist
+
+            # Get username
+            if is_slash:
+                username = context.user.display_name
+                user_id = context.user.id
+            else:
+                username = context.author.display_name
+                user_id = context.author.id
+
+            # Build command string
+            if is_slash:
+                command_str = f"/boat-handling character:{character}"
+                if difficulty != 0:
+                    command_str += f" difficulty:{original_difficulty}"
+                if time_of_day != "midday":
+                    command_str += f" time_of_day:{time_of_day}"
+            else:
+                command_str = f"!boat-handling {character}"
+                if difficulty != 0:
+                    command_str += f" {original_difficulty}"
+                if time_of_day != "midday":
+                    command_str += f" {time_of_day}"
+
+            # Create log embed
+            log_embed = discord.Embed(
+                title="📋 Command Log: Boat Handling",
+                description=f"**User:** {username} (`{user_id}`)\n**Command:** `{command_str}`",
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow(),
+            )
+
+            log_embed.add_field(name="Character", value=character.title(), inline=True)
+            log_embed.add_field(
+                name="Difficulty", value=f"{original_difficulty:+d}", inline=True
+            )
+            log_embed.add_field(
+                name="Time of Day", value=time_of_day.title(), inline=True
+            )
+
+            await log_channel.send(embed=log_embed)
+
+        except (discord.Forbidden, discord.HTTPException, AttributeError):
+            # Silently fail - logging is not critical
+            pass
