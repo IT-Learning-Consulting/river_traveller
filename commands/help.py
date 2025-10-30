@@ -1,18 +1,91 @@
 """
-Command: help
-Description: Display information about all available bot commands
+Help Command Module for WFRP River Travel Bot.
+
+This module provides comprehensive help information for all bot commands,
+including detailed examples, WFRP rules explanations, and usage patterns.
+The help system supports both general overview and command-specific details.
+
+Features:
+- General help showing all available commands
+- Detailed help for each command with examples
+- WFRP rules and mechanics explanations
+- GM feature documentation
+- Stage-based weather system explanation
+- Encounter probability tables
+
+Example usage:
+    /help                    # Show all commands
+    /help roll               # Detailed roll command help
+    /help boat-handling      # Boat handling with character details
+    /help weather            # Weather management with stage info
 """
 
-from typing import Optional
+from typing import Literal, Optional
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 
-def setup(bot: commands.Bot):
+# ============================================================================
+# CONSTANTS
+# ============================================================================
+
+# Available command names for help system
+COMMAND_NAMES = Literal["roll", "boat-handling", "weather", "river-encounter"]
+
+# WFRP game data constants
+SEASONS = ["Spring", "Summer", "Autumn", "Winter"]
+PROVINCES = [
+    "Reikland",
+    "Averland",
+    "Wissenland",
+    "Stirland",
+    "Talabecland",
+    "Ostland",
+    "Hochland",
+    "Middenland",
+    "Nordland",
+]
+
+# Character names for boat-handling
+CHARACTERS = [
+    "Anara of Sānxiá",
+    "Emmerich Falkenrath",
+    "Hildric Sokhlundt",
+    "Oktavian Babel",
+    "Lupus Leonard Joachim Rohrig",
+]
+
+# Time of day options
+TIMES_OF_DAY = ["Dawn", "Midday", "Dusk", "Midnight"]
+
+# Embed colors
+COLOR_GENERAL = discord.Color.blue()
+COLOR_ROLL = discord.Color.blue()
+COLOR_BOAT = discord.Color.green()
+COLOR_WEATHER = discord.Color.gold()
+COLOR_ENCOUNTER = discord.Color.teal()
+
+
+# ============================================================================
+# COMMAND SETUP
+# ============================================================================
+
+
+def setup(bot: commands.Bot) -> None:
     """
     Register help command with the bot.
-    Called from main.py during bot initialization.
+
+    This function is called from main.py during bot initialization. It registers
+    both slash (/) and prefix (!) command variants for displaying help information.
+
+    Args:
+        bot: The Discord bot instance to register commands with.
+
+    Note:
+        The slash command provides autocomplete choices for command-specific help,
+        while the prefix command accepts any string and normalizes it.
     """
 
     # Slash command
@@ -36,11 +109,11 @@ def setup(bot: commands.Bot):
             embed = _create_detailed_help_embed(command)
         else:
             embed = _create_general_help_embed()
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # Prefix command
     @bot.command(name="help")
-    async def help_prefix(ctx, command: Optional[str] = None):
+    async def help_prefix(ctx: commands.Context, command: Optional[str] = None):
         """Display help information about all bot commands."""
         if command:
             # Normalize command name (remove leading slash or exclamation if present)
@@ -62,7 +135,7 @@ def _create_general_help_embed() -> discord.Embed:
         title="🚢 River Travel Bot - Command Guide",
         description="A WFRP (Warhammer Fantasy Roleplay) bot for managing river travel adventures.\n\n"
         "💡 **Tip:** Use `/help <command>` for detailed information about a specific command.",
-        color=discord.Color.blue(),
+        color=COLOR_GENERAL,
     )
 
     # Roll command
@@ -170,7 +243,7 @@ def _create_roll_help() -> discord.Embed:
     embed = discord.Embed(
         title="🎲 /roll - Dice Rolling Command",
         description="Roll dice with flexible notation and WFRP mechanics support.",
-        color=discord.Color.blue(),
+        color=COLOR_ROLL,
     )
 
     embed.add_field(
@@ -233,7 +306,7 @@ def _create_boat_handling_help() -> discord.Embed:
     embed = discord.Embed(
         title="⛵ /boat-handling - Navigation Test Command",
         description="Make WFRP Boat Handling Tests (Row or Sail) for river navigation.",
-        color=discord.Color.green(),
+        color=COLOR_BOAT,
     )
 
     embed.add_field(
@@ -248,27 +321,27 @@ def _create_boat_handling_help() -> discord.Embed:
         inline=False,
     )
 
+    # Generate character list dynamically
+    character_list = "\n".join(f"**{char}**" for char in CHARACTERS)
     embed.add_field(
         name="👥 Available Characters",
-        value=(
-            "**Anara of Sānxiá** - Skilled navigator\n"
-            "**Emmerich Falkenrath** - Experienced sailor\n"
-            "**Hildric Sokhlundt** - Strong rower\n"
-            "**Oktavian Babel** - Versatile traveler\n"
-            "**Lupus Leonard Joachim Rohrig** - Resourceful adventurer"
-        ),
+        value=character_list,
         inline=False,
     )
 
+    # Generate time of day list dynamically
+    time_descriptions = {
+        "Dawn": "Morning winds",
+        "Midday": "Afternoon conditions (default)",
+        "Dusk": "Evening winds",
+        "Midnight": "Night conditions",
+    }
+    time_list = "\n".join(
+        f"**{time}** - {time_descriptions[time]}" for time in TIMES_OF_DAY
+    )
     embed.add_field(
         name="🕐 Time of Day Options",
-        value=(
-            "**Dawn** - Morning winds\n"
-            "**Midday** - Afternoon conditions (default)\n"
-            "**Dusk** - Evening winds\n"
-            "**Midnight** - Night conditions\n\n"
-            "Different times have different wind patterns!"
-        ),
+        value=f"{time_list}\n\nDifferent times have different wind patterns!",
         inline=False,
     )
 
@@ -308,7 +381,7 @@ def _create_weather_help() -> discord.Embed:
     embed = discord.Embed(
         title="🌦️ /weather - Journey Weather Management",
         description="Generate and track weather conditions for multi-day river journeys with stage-based progression.",
-        color=discord.Color.gold(),
+        color=COLOR_WEATHER,
     )
 
     embed.add_field(
@@ -335,17 +408,22 @@ def _create_weather_help() -> discord.Embed:
         inline=False,
     )
 
+    # Generate seasons dynamically
+    seasons_text = " | ".join(f"**{season}**" for season in SEASONS)
     embed.add_field(
         name="🌍 Seasons",
-        value="**Spring** | **Summer** | **Autumn** | **Winter**\n\nEach season has different weather patterns and temperatures.",
+        value=f"{seasons_text}\n\nEach season has different weather patterns and temperatures.",
         inline=False,
     )
 
+    # Generate provinces dynamically (format in rows)
+    provinces_row1 = " | ".join(f"**{p}**" for p in PROVINCES[:4])
+    provinces_row2 = " | ".join(f"**{p}**" for p in PROVINCES[4:])
     embed.add_field(
         name="🗺️ Provinces",
         value=(
-            "**Reikland** | **Averland** | **Wissenland** | **Stirland**\n"
-            "**Talabecland** | **Ostland** | **Hochland** | **Middenland** | **Nordland**\n\n"
+            f"{provinces_row1}\n"
+            f"{provinces_row2}\n\n"
             "Each province has different base temperatures and regional characteristics."
         ),
         inline=False,
@@ -434,7 +512,7 @@ def _create_river_encounter_help() -> discord.Embed:
     embed = discord.Embed(
         title="🌊 /river-encounter - River Events",
         description="Generate random encounters and events during river travel with dual-message system.",
-        color=discord.Color.teal(),
+        color=COLOR_ENCOUNTER,
     )
 
     embed.add_field(
@@ -520,7 +598,7 @@ def _create_river_encounter_help() -> discord.Embed:
     )
 
     embed.set_footer(
-        text="� Tip: Encounters add flavor and challenge to river journeys"
+        text="💡 Tip: Encounters add flavor and challenge to river journeys"
     )
 
     return embed

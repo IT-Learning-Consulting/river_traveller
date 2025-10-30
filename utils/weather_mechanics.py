@@ -1,10 +1,54 @@
 """
 Weather mechanics for WFRP river travel.
-Handles weather generation and calculations.
+
+Handles weather generation and calculations for multi-day river journeys.
+
+Key Responsibilities:
+    - Generate randomized weather conditions (wind, weather type, temperature)
+    - Manage special weather events (cold fronts, heat waves)
+    - Calculate wind chill and temperature perception
+    - Track weather continuity across days
+    - Apply seasonal and regional variations
+
+Design Principles:
+    - Random generation with WFRP-style dice rolls (d10, d100)
+    - Day-to-day continuity: midnight wind continues to dawn
+    - Special events with cooldowns and mutual exclusivity
+    - Separation of data (db/weather_data) and logic (this module)
+
+Weather Systems:
+    1. Wind System:
+       - 4 time periods per day (dawn, midday, dusk, midnight)
+       - 10% chance of change per period
+       - 5 strength levels: calm → light → bracing → strong → very strong
+       - 10 directions (8 compass + headwind + tailwind)
+
+    2. Temperature System:
+       - Base temps by province/season (db/weather_data)
+       - Daily variation: -15°C to +15°C from base
+       - Special events: cold fronts (-10°C), heat waves (+10°C)
+       - Wind chill: -5°C (light/bracing), -10°C (strong/very_strong)
+
+    3. Special Events:
+       - Cold Front: Roll 2, lasts 1d5 days, 7-day cooldown
+       - Heat Wave: Roll 99, lasts 10+1d10 days, 7-day cooldown
+       - Mutual exclusivity: Cannot overlap
+       - Progression tracking: "Day X of Y" in descriptions
+
+Usage Example:
+    >>> # Generate first day
+    >>> wind = generate_daily_wind()
+    >>> weather = roll_weather_condition("spring")
+    >>> temp, cat, desc, *event_data = roll_temperature_with_special_events(
+    ...     "spring", "reikland"
+    ... )
+
+    >>> # Generate second day (continuity)
+    >>> wind = generate_daily_wind_with_previous(wind[-1])
 """
 
 import random
-from typing import Tuple, List, Dict
+from typing import Tuple, List, Dict, Optional
 from db.weather_data import (
     get_wind_strength_from_roll,
     get_wind_direction_from_roll,
@@ -17,24 +61,109 @@ from db.weather_data import (
     TEMPERATURE_DESCRIPTIONS,
 )
 
-# Phase 2: Weather Event Constants
-COLD_FRONT_TRIGGER_ROLL = 2
-HEAT_WAVE_TRIGGER_ROLL = 99
-COLD_FRONT_COOLDOWN_DAYS = 7
-HEAT_WAVE_COOLDOWN_DAYS = 7
-COLD_FRONT_TEMP_MODIFIER = -10
-HEAT_WAVE_TEMP_MODIFIER = 10
+# Wind change mechanics
+WIND_CHANGE_ROLL: int = 1  # Wind changes on a roll of 1 (10% chance)
+DIRECTION_CHANGE_ROLL: int = 1  # 50% chance direction changes with strength
+WIND_CHANGE_DIRECTIONS: List[str] = ["stronger", "lighter"]
+WIND_STRENGTH_ORDER: List[str] = ["calm", "light", "bracing", "strong", "very_strong"]
+
+# Wind strength boundary rules
+VERY_STRONG_MAX: str = "strong"  # Very strong can only decrease to strong
+CALM_MIN: str = "light"  # Calm can only increase to light
+
+# Special weather events
+COLD_FRONT_TRIGGER_ROLL: int = 2
+HEAT_WAVE_TRIGGER_ROLL: int = 99
+COLD_FRONT_COOLDOWN_DAYS: int = 7
+HEAT_WAVE_COOLDOWN_DAYS: int = 7
+COLD_FRONT_TEMP_MODIFIER: int = -10
+HEAT_WAVE_TEMP_MODIFIER: int = 10
+COLD_FRONT_MIN_DURATION: int = 1
+COLD_FRONT_MAX_DURATION: int = 5
+HEAT_WAVE_BASE_DURATION: int = 10
+HEAT_WAVE_BONUS_MIN: int = 1
+HEAT_WAVE_BONUS_MAX: int = 10
+
+# Temperature thresholds for categorization
+TEMP_EXTREMELY_LOW: int = -15
+TEMP_VERY_LOW: int = -10
+TEMP_LOW: int = -6
+TEMP_COOL: int = -3
+TEMP_AVERAGE: int = 2
+TEMP_WARM: int = 5
+TEMP_HIGH: int = 9
+TEMP_VERY_HIGH: int = 14
+
+# Wind chill modifiers
+WIND_CHILL_LIGHT_BRACING: int = -5
+WIND_CHILL_STRONG_VERY_STRONG: int = -10
+WIND_CHILL_WINDS_LIGHT: List[str] = ["light", "bracing"]
+WIND_CHILL_WINDS_STRONG: List[str] = ["strong", "very_strong"]
+
+# Temperature description thresholds
+DESC_DANGEROUS_COLD: int = -15
+DESC_VERY_COLD: int = -10
+DESC_COOLER: int = -5
+DESC_SLIGHTLY_COOL: int = -2
+DESC_SLIGHTLY_WARM: int = 2
+DESC_WARMER: int = 5
+DESC_VERY_WARM: int = 10
+DESC_DANGEROUS_HOT: int = 15
+
+# Time periods
+TIMES_OF_DAY: List[str] = ["Dawn", "Midday", "Dusk", "Midnight"]
+TIME_DAWN: str = "Dawn"
+TIME_MIDDAY: str = "Midday"
+TIME_DUSK: str = "Dusk"
+TIME_MIDNIGHT: str = "Midnight"
+
+# Dice roll ranges
+D10_MIN: int = 1
+D10_MAX: int = 10
+D100_MIN: int = 1
+D100_MAX: int = 100
+COIN_FLIP_MIN: int = 1
+COIN_FLIP_MAX: int = 2
+
+# Special event emoji
+EMOJI_COLD_FRONT: str = "❄️"
+EMOJI_HEAT_WAVE: str = "🔥"
+
+# Event suppression values (to prevent nested events)
+COLD_FRONT_SUPPRESSION_ROLL: int = 3  # Treat as very_low instead
+HEAT_WAVE_SUPPRESSION_ROLL: int = 98  # Treat as very_high instead
+
+# Default values
+DEFAULT_MODIFIER: int = 0
+DEFAULT_WIND_MODIFIER: str = "—"
+DEFAULT_COOLDOWN: int = 99  # Large number to allow event triggers
+DEFAULT_EVENT_DAYS: int = 0
+DEFAULT_EVENT_TOTAL: int = 0
+
+# Fallback keys for missing data
+FALLBACK_WEATHER: str = "fair"
+FALLBACK_TEMP_CATEGORY: str = "average"
 
 
 def generate_wind_conditions() -> Tuple[str, str]:
     """
-    Generate initial wind conditions.
+    Generate initial wind conditions using d10 tables.
+
+    Rolls on standard WFRP wind tables for strength and direction.
 
     Returns:
-        Tuple of (strength, direction) as keys
+        Tuple[str, str]: (strength_key, direction_key). Examples:
+            - ("light", "north")
+            - ("bracing", "tailwind")
+            - ("calm", "calm")
+
+    Example:
+        >>> strength, direction = generate_wind_conditions()
+        >>> print(f"{WIND_STRENGTH[strength]} {WIND_DIRECTION.get(direction, '')}")
+        Light Headwind
     """
-    strength_roll = random.randint(1, 10)
-    direction_roll = random.randint(1, 10)
+    strength_roll = random.randint(D10_MIN, D10_MAX)
+    direction_roll = random.randint(D10_MIN, D10_MAX)
 
     strength = get_wind_strength_from_roll(strength_roll)
     direction = get_wind_direction_from_roll(direction_roll)
@@ -44,51 +173,73 @@ def generate_wind_conditions() -> Tuple[str, str]:
 
 def check_wind_change(current_strength: str) -> Tuple[bool, str]:
     """
-    Check if wind strength changes.
+    Check if wind strength changes (10% chance per time period).
+
+    Wind changes on a roll of 1 on d10. When it changes, 50/50 stronger or lighter.
+    Boundaries: Very Strong can only decrease, Calm can only increase.
 
     Args:
-        current_strength: Current wind strength key
+        current_strength: Current wind strength key (from WIND_STRENGTH_ORDER)
 
     Returns:
-        Tuple of (changed, new_strength)
-    """
-    roll = random.randint(1, 10)
+        Tuple[bool, str]: (changed, new_strength). Examples:
+            - (False, "light") - No change
+            - (True, "bracing") - Changed from light to bracing
 
-    if roll != 1:
+    Example:
+        >>> changed, new_strength = check_wind_change("light")
+        >>> if changed:
+        ...     print(f"Wind changed to {new_strength}")
+    """
+    roll = random.randint(D10_MIN, D10_MAX)
+
+    if roll != WIND_CHANGE_ROLL:
         return False, current_strength
 
     # Wind changes - 50% stronger, 50% lighter
-    direction = random.choice(["stronger", "lighter"])
+    direction = random.choice(WIND_CHANGE_DIRECTIONS)
 
-    strength_order = ["calm", "light", "bracing", "strong", "very_strong"]
-    current_index = strength_order.index(current_strength)
+    current_index = WIND_STRENGTH_ORDER.index(current_strength)
 
     if direction == "stronger":
         if current_strength == "very_strong":
             # Very Strong can only go to Strong
-            return True, "strong"
-        new_index = min(current_index + 1, len(strength_order) - 1)
+            return True, VERY_STRONG_MAX
+        new_index = min(current_index + 1, len(WIND_STRENGTH_ORDER) - 1)
     else:  # lighter
         if current_strength == "calm":
             # Calm can only go to Light
-            return True, "light"
+            return True, CALM_MIN
         new_index = max(current_index - 1, 0)
 
-    return True, strength_order[new_index]
+    return True, WIND_STRENGTH_ORDER[new_index]
 
 
-def get_wind_modifiers(strength: str, direction: str) -> Dict[str, str]:
+def get_wind_modifiers(strength: str, direction: str) -> Dict[str, Optional[str]]:
     """
-    Get wind modifiers for boat handling.
+    Get wind modifiers for boat handling from lookup table.
+
+    Retrieves speed modifier and special notes from WIND_MODIFIERS table.
 
     Args:
-        strength: Wind strength key
-        direction: Wind direction key
+        strength: Wind strength key (e.g., "light", "bracing")
+        direction: Wind direction key (e.g., "north", "tailwind")
 
     Returns:
-        Dict with 'modifier' and 'notes' keys
+        Dict[str, Optional[str]]: Dictionary with keys:
+            - modifier (str): Speed modifier (e.g., "+10%", "-25%", "—")
+            - notes (Optional[str]): Special conditions or None
+
+    Example:
+        >>> mods = get_wind_modifiers("moderate", "tailwind")
+        >>> print(mods['modifier'])
+        +10%
+        >>> print(mods['notes'])
+        Tacking required for speed bonus
     """
-    modifier_data = WIND_MODIFIERS.get((strength, direction), ("—", None))
+    modifier_data = WIND_MODIFIERS.get(
+        (strength, direction), (DEFAULT_WIND_MODIFIER, None)
+    )
 
     return {
         "modifier": modifier_data[0],
@@ -189,50 +340,81 @@ def generate_daily_wind_with_previous(
 
 def roll_weather_condition(season: str) -> str:
     """
-    Roll for weather condition based on season.
+    Roll for weather condition based on season using d100 table.
+
+    Uses seasonal weather tables from db/weather_data. Different seasons
+    have different probabilities for weather types.
 
     Args:
         season: Season name (spring, summer, autumn, winter)
 
     Returns:
-        Weather type key
+        str: Weather type key (e.g., "fair", "rain", "snow", "blizzard")
+
+    Example:
+        >>> weather = roll_weather_condition("winter")
+        >>> print(weather)
+        snow  # More likely in winter
     """
-    roll = random.randint(1, 100)
+    roll = random.randint(D100_MIN, D100_MAX)
     return get_weather_from_roll(season, roll)
 
 
 def get_weather_effects(weather_type: str) -> Dict[str, any]:
     """
-    Get weather effects and description.
+    Get weather effects and description from lookup table.
+
+    Retrieves complete weather data including name, description, and mechanical effects.
 
     Args:
-        weather_type: Weather type key
+        weather_type: Weather type key (e.g., "rain", "snow", "blizzard")
 
     Returns:
-        Dict with 'name', 'description', 'effects' keys
+        Dict[str, any]: Weather data with keys:
+            - name (str): Display name
+            - description (str): Flavor text
+            - effects (List[str]): Mechanical effects list
+
+    Example:
+        >>> data = get_weather_effects("rain")
+        >>> print(data['name'])
+        Rain
+        >>> print(data['effects'])
+        ['Visibility reduced', 'Slippery surfaces']
     """
-    return WEATHER_EFFECTS.get(weather_type, WEATHER_EFFECTS["fair"])
+    return WEATHER_EFFECTS.get(weather_type, WEATHER_EFFECTS[FALLBACK_WEATHER])
 
 
 def roll_temperature(season: str, province: str) -> Tuple[int, str, str]:
     """
-    Roll for temperature.
+    Roll for temperature using d100 table with provincial/seasonal base.
+
+    Combines base temperature (province + season) with daily variation roll.
+    Does NOT include special events (use roll_temperature_with_special_events for that).
 
     Args:
-        season: Season name
-        province: Province name
+        season: Season name (spring, summer, autumn, winter)
+        province: Province name (e.g., "reikland", "middenland")
 
     Returns:
-        Tuple of (actual_temp, category, description)
+        Tuple[int, str, str]: (actual_temp, category, description)
+            - actual_temp: Final temperature in °C
+            - category: Temperature category key
+            - description: Descriptive text
+
+    Example:
+        >>> temp, cat, desc = roll_temperature("winter", "reikland")
+        >>> print(f"{temp}°C - {desc}")
+        -5°C - Cooler than average
     """
-    roll = random.randint(1, 100)
+    roll = random.randint(D100_MIN, D100_MAX)
     category, modifier = get_temperature_category_from_roll(roll)
 
     base_temp = get_province_base_temperature(province, season)
     actual_temp = base_temp + modifier
 
     description = TEMPERATURE_DESCRIPTIONS.get(
-        category, TEMPERATURE_DESCRIPTIONS["average"]
+        category, TEMPERATURE_DESCRIPTIONS[FALLBACK_TEMP_CATEGORY]
     )
 
     return actual_temp, category, description
@@ -264,21 +446,21 @@ def get_category_from_actual_temp(actual_temp: int, base_temp: int) -> str:
     """
     diff = actual_temp - base_temp
 
-    if diff <= -15:
+    if diff <= TEMP_EXTREMELY_LOW:
         return "extremely_low"
-    elif diff <= -10:
+    elif diff <= TEMP_VERY_LOW:
         return "very_low"
-    elif diff <= -6:
+    elif diff <= TEMP_LOW:
         return "low"
-    elif diff <= -3:
+    elif diff <= TEMP_COOL:
         return "cool"
-    elif diff <= 2:
+    elif diff <= TEMP_AVERAGE:
         return "average"
-    elif diff <= 5:
+    elif diff <= TEMP_WARM:
         return "warm"
-    elif diff <= 9:
+    elif diff <= TEMP_HIGH:
         return "high"
-    elif diff <= 14:
+    elif diff <= TEMP_VERY_HIGH:
         return "very_high"
     else:
         return "extremely_high"
@@ -326,11 +508,13 @@ def handle_cold_front(
             return 0, 0, 0
 
         # New cold front triggers!
-        duration = random.randint(1, 5)  # 1d5 days
+        duration = random.randint(
+            COLD_FRONT_MIN_DURATION, COLD_FRONT_MAX_DURATION
+        )  # 1d5 days
         return COLD_FRONT_TEMP_MODIFIER, duration, duration
 
     # No cold front
-    return 0, 0, 0
+    return DEFAULT_MODIFIER, DEFAULT_EVENT_DAYS, DEFAULT_EVENT_TOTAL
 
 
 def handle_heat_wave(
@@ -368,18 +552,20 @@ def handle_heat_wave(
     if roll == HEAT_WAVE_TRIGGER_ROLL:
         # Block if cold front is active (mutual exclusivity)
         if cold_front_active:
-            return 0, 0, 0
+            return DEFAULT_MODIFIER, DEFAULT_EVENT_DAYS, DEFAULT_EVENT_TOTAL
 
         # Block if still in cooldown period
         if days_since_last_heat_wave < HEAT_WAVE_COOLDOWN_DAYS:
-            return 0, 0, 0
+            return DEFAULT_MODIFIER, DEFAULT_EVENT_DAYS, DEFAULT_EVENT_TOTAL
 
         # New heat wave triggers!
-        duration = 10 + random.randint(1, 10)  # 10+1d10 days (11-20)
+        duration = HEAT_WAVE_BASE_DURATION + random.randint(
+            HEAT_WAVE_BONUS_MIN, HEAT_WAVE_BONUS_MAX
+        )  # 10+1d10 days (11-20)
         return HEAT_WAVE_TEMP_MODIFIER, duration, duration
 
     # No heat wave
-    return 0, 0, 0
+    return DEFAULT_MODIFIER, DEFAULT_EVENT_DAYS, DEFAULT_EVENT_TOTAL
 
 
 def roll_temperature_with_special_events(
@@ -414,14 +600,14 @@ def roll_temperature_with_special_events(
                  heat_wave_remaining, heat_wave_total_new)
     """
     # 1. Roll for daily temperature variation
-    roll = random.randint(1, 100)
+    roll = random.randint(D100_MIN, D100_MAX)
     original_roll = roll
 
     # 2. Suppress event triggers during active events (prevents nesting)
     if cold_front_days > 0 and roll == COLD_FRONT_TRIGGER_ROLL:
-        roll = 3  # Treat as very_low instead of triggering new cold front
+        roll = COLD_FRONT_SUPPRESSION_ROLL  # Treat as very_low instead of triggering new cold front
     if heat_wave_days > 0 and roll == HEAT_WAVE_TRIGGER_ROLL:
-        roll = 98  # Treat as very_high instead of triggering new heat wave
+        roll = HEAT_WAVE_SUPPRESSION_ROLL  # Treat as very_high instead of triggering new heat wave
 
     # 3. Get daily variation from temperature table
     category, daily_modifier = get_temperature_category_from_roll(roll)
@@ -463,32 +649,26 @@ def roll_temperature_with_special_events(
 
         if days_elapsed == 1:
             # First day - add flavor text
-            description += f"\n*❄️ Cold Front: Day {days_elapsed} of {cold_front_total_new} - Sky filled with flocks of emigrating birds*"
+            description += f"\n*{EMOJI_COLD_FRONT} Cold Front: Day {days_elapsed} of {cold_front_total_new} - Sky filled with flocks of emigrating birds*"
         elif cold_front_remaining == 1:
             # Final day
-            description += f"\n*❄️ Cold Front: Day {days_elapsed} of {cold_front_total_new} (Final Day)*"
+            description += f"\n*{EMOJI_COLD_FRONT} Cold Front: Day {days_elapsed} of {cold_front_total_new} (Final Day)*"
         else:
             # Middle days
-            description += (
-                f"\n*❄️ Cold Front: Day {days_elapsed} of {cold_front_total_new}*"
-            )
+            description += f"\n*{EMOJI_COLD_FRONT} Cold Front: Day {days_elapsed} of {cold_front_total_new}*"
 
     if heat_wave_remaining > 0:
         days_elapsed = heat_wave_total_new - heat_wave_remaining + 1
 
         if days_elapsed == 1:
             # First day
-            description += (
-                f"\n*🔥 Heat Wave: Day {days_elapsed} of {heat_wave_total_new}*"
-            )
+            description += f"\n*{EMOJI_HEAT_WAVE} Heat Wave: Day {days_elapsed} of {heat_wave_total_new}*"
         elif heat_wave_remaining == 1:
             # Final day
-            description += f"\n*🔥 Heat Wave: Day {days_elapsed} of {heat_wave_total_new} (Final Day)*"
+            description += f"\n*{EMOJI_HEAT_WAVE} Heat Wave: Day {days_elapsed} of {heat_wave_total_new} (Final Day)*"
         else:
             # Middle days
-            description += (
-                f"\n*🔥 Heat Wave: Day {days_elapsed} of {heat_wave_total_new}*"
-            )
+            description += f"\n*{EMOJI_HEAT_WAVE} Heat Wave: Day {days_elapsed} of {heat_wave_total_new}*"
 
     return (
         actual_temp,
@@ -504,51 +684,75 @@ def roll_temperature_with_special_events(
 
 def apply_wind_chill(temperature: int, wind_strength: str) -> int:
     """
-    Apply wind chill to temperature.
+    Apply wind chill modifier to temperature based on wind strength.
+
+    Wind chill makes it feel colder:
+    - Light/Bracing winds: -5°C
+    - Strong/Very Strong winds: -10°C
+    - Calm winds: No effect
 
     Args:
         temperature: Actual temperature in Celsius
-        wind_strength: Wind strength key
+        wind_strength: Wind strength key from WIND_STRENGTH_ORDER
 
     Returns:
-        Perceived temperature with wind chill applied
+        int: Perceived temperature with wind chill applied
+
+    Example:
+        >>> apply_wind_chill(10, "light")
+        5  # Feels 5°C colder
+        >>> apply_wind_chill(10, "strong")
+        0  # Feels 10°C colder
+        >>> apply_wind_chill(10, "calm")
+        10  # No wind chill
     """
-    if wind_strength in ["light", "bracing"]:
-        return temperature - 5
-    elif wind_strength in ["strong", "very_strong"]:
-        return temperature - 10
+    if wind_strength in WIND_CHILL_WINDS_LIGHT:
+        return temperature + WIND_CHILL_LIGHT_BRACING
+    elif wind_strength in WIND_CHILL_WINDS_STRONG:
+        return temperature + WIND_CHILL_STRONG_VERY_STRONG
     else:
         return temperature
 
 
 def get_temperature_description_text(temp: int, base_temp: int) -> str:
     """
-    Get descriptive text for temperature relative to average.
+    Get descriptive text for temperature relative to seasonal average.
+
+    Describes how the temperature feels compared to normal for the season.
 
     Args:
-        temp: Actual temperature
-        base_temp: Average temperature for season
+        temp: Actual temperature in °C
+        base_temp: Average temperature for season/province in °C
 
     Returns:
-        Descriptive text
+        str: Descriptive text. Examples:
+            - "Dangerously cold" (15+ degrees below average)
+            - "Comfortable for the season" (near average)
+            - "Dangerously hot" (15+ degrees above average)
+
+    Example:
+        >>> get_temperature_description_text(5, 20)
+        'Very cold for the season'
+        >>> get_temperature_description_text(21, 20)
+        'Slightly warm'
     """
     diff = temp - base_temp
 
-    if diff <= -15:
+    if diff <= DESC_DANGEROUS_COLD:
         return "Dangerously cold"
-    elif diff <= -10:
+    elif diff <= DESC_VERY_COLD:
         return "Very cold for the season"
-    elif diff <= -5:
+    elif diff <= DESC_COOLER:
         return "Cooler than average"
-    elif diff <= -2:
+    elif diff <= DESC_SLIGHTLY_COOL:
         return "Slightly cool"
-    elif diff >= 15:
+    elif diff >= DESC_DANGEROUS_HOT:
         return "Dangerously hot"
-    elif diff >= 10:
+    elif diff >= DESC_VERY_WARM:
         return "Very warm for the season"
-    elif diff >= 5:
+    elif diff >= DESC_WARMER:
         return "Warmer than average"
-    elif diff >= 2:
+    elif diff >= DESC_SLIGHTLY_WARM:
         return "Slightly warm"
     else:
         return "Comfortable for the season"
@@ -556,16 +760,26 @@ def get_temperature_description_text(temp: int, base_temp: int) -> str:
 
 def get_wind_chill_note(wind_strength: str) -> str:
     """
-    Get note about wind chill effect.
+    Get note about wind chill effect for display.
+
+    Creates descriptive text explaining wind chill perception.
 
     Args:
-        wind_strength: Wind strength key
+        wind_strength: Wind strength key from WIND_STRENGTH_ORDER
 
     Returns:
-        Wind chill note or empty string
+        str: Wind chill note with temperature effect, or empty string if no effect
+
+    Example:
+        >>> get_wind_chill_note("light")
+        ' (feels 5°C colder due to Light wind)'
+        >>> get_wind_chill_note("strong")
+        ' (feels 10°C colder due to Strong wind)'
+        >>> get_wind_chill_note("calm")
+        ''
     """
-    if wind_strength in ["light", "bracing"]:
-        return f" (feels 5°C colder due to {WIND_STRENGTH[wind_strength]} wind)"
-    elif wind_strength in ["strong", "very_strong"]:
-        return f" (feels 10°C colder due to {WIND_STRENGTH[wind_strength]} wind)"
+    if wind_strength in WIND_CHILL_WINDS_LIGHT:
+        return f" (feels {abs(WIND_CHILL_LIGHT_BRACING)}°C colder due to {WIND_STRENGTH[wind_strength]} wind)"
+    elif wind_strength in WIND_CHILL_WINDS_STRONG:
+        return f" (feels {abs(WIND_CHILL_STRONG_VERY_STRONG)}°C colder due to {WIND_STRENGTH[wind_strength]} wind)"
     return ""

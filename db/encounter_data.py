@@ -1,13 +1,86 @@
 """
 River Encounter Data Module
 
-Contains all encounter tables, flavor texts, and mechanical data for the
-/river-encounter command. Includes probability tables, encounter details,
-and helper functions for lookup.
+Comprehensive river encounter system for the /river-encounter command with probability-based
+d100 encounter tables, flavor texts, and mechanical data for WFRP 4th Edition river travel.
+
+Key Responsibilities:
+    - Encounter type determination (positive, coincidental, uneventful, harmful, accident)
+    - Flavor text generation (player-facing cryptic/grimdark descriptions)
+    - GM mechanical data (encounter details, effects, tests, damage)
+    - d100 table lookups for all encounter categories
+
+Encounter Categories:
+    - Positive (1-10): Beneficial encounters that help the party
+    - Coincidental (11-25): Neutral, curious events with no mechanical impact
+    - Uneventful (26-85): Nothing happens (most common outcome)
+    - Harmful (86-95): Dangerous encounters requiring tests or causing damage
+    - Accident (96-100): Critical boat/crew accidents with complex mechanics
+
+Data Structure:
+    - Each encounter category has flavor texts (player-facing) and detail tables (GM-facing)
+    - Encounter tables use (min_roll, max_roll) tuple keys for d100 ranges
+    - Each encounter contains: title, description, effects list, mechanics dict
+    - Accident encounters have the most complex mechanics with nested test/failure chains
+
+Usage:
+    1. Roll d100 to determine encounter type:
+       encounter_type = get_encounter_type_from_roll(roll)
+
+    2. Get player flavor text:
+       flavor = get_random_flavor_text(encounter_type)
+
+    3. Get GM mechanics (if needed):
+       if encounter_type == "positive":
+           details = get_positive_encounter_from_roll(detail_roll)
+       elif encounter_type == "harmful":
+           details = get_harmful_encounter_from_roll(detail_roll)
+       # etc.
+
+Design Principles:
+    - Player flavor texts reveal no mechanics (grimdark atmosphere only)
+    - GM data is comprehensive with all mechanical details
+    - Encounter ranges complete (no gaps in d100 tables)
+    - Accidents have most complex mechanics (critical hits, drowning, fire)
+    - Uneventful is most common (60% chance)
 """
 
 from typing import Dict
 import random
+
+# =============================================================================
+# MODULE-LEVEL CONSTANTS
+# =============================================================================
+
+# Encounter Type Roll Ranges (d100)
+ENCOUNTER_TYPE_POSITIVE_MIN = 1
+ENCOUNTER_TYPE_POSITIVE_MAX = 10
+ENCOUNTER_TYPE_COINCIDENTAL_MIN = 11
+ENCOUNTER_TYPE_COINCIDENTAL_MAX = 25
+ENCOUNTER_TYPE_UNEVENTFUL_MIN = 26
+ENCOUNTER_TYPE_UNEVENTFUL_MAX = 85
+ENCOUNTER_TYPE_HARMFUL_MIN = 86
+ENCOUNTER_TYPE_HARMFUL_MAX = 95
+ENCOUNTER_TYPE_ACCIDENT_MIN = 96
+ENCOUNTER_TYPE_ACCIDENT_MAX = 100
+
+# Encounter Type Names
+ENCOUNTER_TYPE_POSITIVE = "positive"
+ENCOUNTER_TYPE_COINCIDENTAL = "coincidental"
+ENCOUNTER_TYPE_UNEVENTFUL = "uneventful"
+ENCOUNTER_TYPE_HARMFUL = "harmful"
+ENCOUNTER_TYPE_ACCIDENT = "accident"
+
+# Dice Roll Validation
+D100_MIN = 1
+D100_MAX = 100
+
+# Encounter Detail Keys
+KEY_TITLE = "title"
+KEY_DESCRIPTION = "description"
+KEY_EFFECTS = "effects"
+KEY_MECHANICS = "mechanics"
+KEY_ROLL = "roll"
 
 # =============================================================================
 # PLAYER FLAVOR TEXT TABLES
@@ -77,7 +150,14 @@ ACCIDENT_FLAVOR_TEXTS = [
 
 def get_encounter_type_from_roll(roll: int) -> str:
     """
-    Determine encounter type from a d100 roll.
+    Determine encounter type from a d100 roll using standard WFRP encounter probabilities.
+
+    The encounter distribution is:
+        - Positive: 1-10 (10% chance) - Beneficial encounters
+        - Coincidental: 11-25 (15% chance) - Neutral curiosities
+        - Uneventful: 26-85 (60% chance) - Nothing happens
+        - Harmful: 86-95 (10% chance) - Dangerous encounters
+        - Accident: 96-100 (5% chance) - Critical boat accidents
 
     Args:
         roll: The d100 roll result (1-100)
@@ -87,41 +167,59 @@ def get_encounter_type_from_roll(roll: int) -> str:
 
     Raises:
         ValueError: If roll is outside 1-100 range
-    """
-    if roll < 1 or roll > 100:
-        raise ValueError(f"Roll must be between 1 and 100, got {roll}")
 
-    if 1 <= roll <= 10:
-        return "positive"
-    elif 11 <= roll <= 25:
-        return "coincidental"
-    elif 26 <= roll <= 85:
-        return "uneventful"
-    elif 86 <= roll <= 95:
-        return "harmful"
+    Examples:
+        >>> get_encounter_type_from_roll(5)
+        'positive'
+        >>> get_encounter_type_from_roll(50)
+        'uneventful'
+        >>> get_encounter_type_from_roll(97)
+        'accident'
+    """
+    if roll < D100_MIN or roll > D100_MAX:
+        raise ValueError(f"Roll must be between {D100_MIN} and {D100_MAX}, got {roll}")
+
+    if ENCOUNTER_TYPE_POSITIVE_MIN <= roll <= ENCOUNTER_TYPE_POSITIVE_MAX:
+        return ENCOUNTER_TYPE_POSITIVE
+    elif ENCOUNTER_TYPE_COINCIDENTAL_MIN <= roll <= ENCOUNTER_TYPE_COINCIDENTAL_MAX:
+        return ENCOUNTER_TYPE_COINCIDENTAL
+    elif ENCOUNTER_TYPE_UNEVENTFUL_MIN <= roll <= ENCOUNTER_TYPE_UNEVENTFUL_MAX:
+        return ENCOUNTER_TYPE_UNEVENTFUL
+    elif ENCOUNTER_TYPE_HARMFUL_MIN <= roll <= ENCOUNTER_TYPE_HARMFUL_MAX:
+        return ENCOUNTER_TYPE_HARMFUL
     else:  # 96-100
-        return "accident"
+        return ENCOUNTER_TYPE_ACCIDENT
 
 
 def get_random_flavor_text(encounter_type: str) -> str:
     """
-    Get a random flavor text for the given encounter type.
+    Get a random player-facing flavor text for the given encounter type.
+
+    Flavor texts are cryptic, grimdark descriptions that set atmosphere without
+    revealing mechanics. They're designed for WFRP's dark fantasy tone.
 
     Args:
-        encounter_type: Type of encounter ("positive", "coincidental", etc.)
+        encounter_type: Type of encounter ("positive", "coincidental", "uneventful",
+                       "harmful", or "accident")
 
     Returns:
-        Random flavor text string
+        Random flavor text string from the appropriate table
 
     Raises:
         ValueError: If encounter_type is not recognized
+
+    Examples:
+        >>> flavor = get_random_flavor_text("positive")
+        >>> # Returns one of 8 positive flavor texts randomly
+        >>> flavor = get_random_flavor_text("harmful")
+        >>> # Returns one of 8 harmful flavor texts randomly
     """
     flavor_map = {
-        "positive": POSITIVE_FLAVOR_TEXTS,
-        "coincidental": COINCIDENTAL_FLAVOR_TEXTS,
-        "uneventful": UNEVENTFUL_FLAVOR_TEXTS,
-        "harmful": HARMFUL_FLAVOR_TEXTS,
-        "accident": ACCIDENT_FLAVOR_TEXTS,
+        ENCOUNTER_TYPE_POSITIVE: POSITIVE_FLAVOR_TEXTS,
+        ENCOUNTER_TYPE_COINCIDENTAL: COINCIDENTAL_FLAVOR_TEXTS,
+        ENCOUNTER_TYPE_UNEVENTFUL: UNEVENTFUL_FLAVOR_TEXTS,
+        ENCOUNTER_TYPE_HARMFUL: HARMFUL_FLAVOR_TEXTS,
+        ENCOUNTER_TYPE_ACCIDENT: ACCIDENT_FLAVOR_TEXTS,
     }
 
     if encounter_type not in flavor_map:
@@ -208,23 +306,39 @@ POSITIVE_ENCOUNTERS = {
 
 def get_positive_encounter_from_roll(roll: int) -> Dict:
     """
-    Get positive encounter details from a d100 roll.
+    Get positive encounter GM details from a d100 roll.
+
+    Positive encounters are beneficial events that help the party through healing,
+    information, assistance, or favorable conditions. Range covers full d100 (1-100)
+    with 10 different positive encounters.
 
     Args:
         roll: The d100 roll result (1-100)
 
     Returns:
-        Dictionary containing encounter details
+        Dictionary containing encounter details with keys:
+            - title: Encounter name
+            - description: Full GM description
+            - effects: List of mechanical effects
+            - mechanics: Dict with mechanical details (bonuses, healing, etc.) or None
+            - roll: The original roll value
 
     Raises:
-        ValueError: If roll is outside 1-100 range
+        ValueError: If roll is outside 1-100 range or no encounter found
+
+    Examples:
+        >>> encounter = get_positive_encounter_from_roll(45)
+        >>> encounter['title']
+        'Experienced Guide'
+        >>> encounter['mechanics']['bonus']
+        '+10 to next Boat Handling Test'
     """
-    if roll < 1 or roll > 100:
-        raise ValueError(f"Roll must be between 1 and 100, got {roll}")
+    if roll < D100_MIN or roll > D100_MAX:
+        raise ValueError(f"Roll must be between {D100_MIN} and {D100_MAX}, got {roll}")
 
     for (min_roll, max_roll), encounter in POSITIVE_ENCOUNTERS.items():
         if min_roll <= roll <= max_roll:
-            return {**encounter, "roll": roll}
+            return {**encounter, KEY_ROLL: roll}
 
     # Should never reach here if data is complete
     raise ValueError(f"No positive encounter found for roll {roll}")
@@ -300,23 +414,39 @@ COINCIDENTAL_ENCOUNTERS = {
 
 def get_coincidental_encounter_from_roll(roll: int) -> Dict:
     """
-    Get coincidental encounter details from a d100 roll.
+    Get coincidental encounter GM details from a d100 roll.
+
+    Coincidental encounters are neutral, curious events that add flavor without
+    mechanical impact. These are interesting observations, mysteries, or oddities
+    that enrich the journey narrative.
 
     Args:
         roll: The d100 roll result (1-100)
 
     Returns:
-        Dictionary containing encounter details
+        Dictionary containing encounter details with keys:
+            - title: Encounter name
+            - description: Full GM description
+            - effects: List of atmospheric/narrative effects
+            - mechanics: Always None for coincidental encounters
+            - roll: The original roll value
 
     Raises:
-        ValueError: If roll is outside 1-100 range
+        ValueError: If roll is outside 1-100 range or no encounter found
+
+    Examples:
+        >>> encounter = get_coincidental_encounter_from_roll(15)
+        >>> encounter['title']
+        'Abandoned Boat'
+        >>> encounter['mechanics']
+        None
     """
-    if roll < 1 or roll > 100:
-        raise ValueError(f"Roll must be between 1 and 100, got {roll}")
+    if roll < D100_MIN or roll > D100_MAX:
+        raise ValueError(f"Roll must be between {D100_MIN} and {D100_MAX}, got {roll}")
 
     for (min_roll, max_roll), encounter in COINCIDENTAL_ENCOUNTERS.items():
         if min_roll <= roll <= max_roll:
-            return {**encounter, "roll": roll}
+            return {**encounter, KEY_ROLL: roll}
 
     # Should never reach here if data is complete
     raise ValueError(f"No coincidental encounter found for roll {roll}")
@@ -336,10 +466,24 @@ UNEVENTFUL_ENCOUNTER = {
 
 def get_uneventful_encounter() -> Dict:
     """
-    Get the uneventful encounter details.
+    Get the uneventful encounter details (nothing happens).
+
+    This is the most common encounter type (60% probability). Journey continues
+    smoothly with no mechanical or narrative events.
 
     Returns:
-        Dictionary containing encounter details
+        Dictionary containing encounter details with keys:
+            - title: "Uneventful Travel"
+            - description: Standard uneventful description
+            - effects: Empty list (no effects)
+            - mechanics: None
+
+    Examples:
+        >>> encounter = get_uneventful_encounter()
+        >>> encounter['title']
+        'Uneventful Travel'
+        >>> encounter['effects']
+        []
     """
     return {**UNEVENTFUL_ENCOUNTER}
 
@@ -454,23 +598,41 @@ HARMFUL_ENCOUNTERS = {
 
 def get_harmful_encounter_from_roll(roll: int) -> Dict:
     """
-    Get harmful encounter details from a d100 roll.
+    Get harmful encounter GM details from a d100 roll.
+
+    Harmful encounters are dangerous events requiring tests, causing damage, or
+    threatening the party with disease, combat, or environmental hazards. These
+    encounters have mechanical consequences and require player action.
 
     Args:
         roll: The d100 roll result (1-100)
 
     Returns:
-        Dictionary containing encounter details
+        Dictionary containing encounter details with keys:
+            - title: Encounter name
+            - description: Full GM description
+            - effects: List of harmful effects and consequences
+            - mechanics: Dict with test requirements, damage, combat details, etc.
+            - roll: The original roll value
 
     Raises:
-        ValueError: If roll is outside 1-100 range
+        ValueError: If roll is outside 1-100 range or no encounter found
+
+    Examples:
+        >>> encounter = get_harmful_encounter_from_roll(15)
+        >>> encounter['title']
+        'River Pirates'
+        >>> encounter['mechanics']['combat']
+        True
+        >>> encounter['mechanics']['enemies']
+        '3-6 River Pirates'
     """
-    if roll < 1 or roll > 100:
-        raise ValueError(f"Roll must be between 1 and 100, got {roll}")
+    if roll < D100_MIN or roll > D100_MAX:
+        raise ValueError(f"Roll must be between {D100_MIN} and {D100_MAX}, got {roll}")
 
     for (min_roll, max_roll), encounter in HARMFUL_ENCOUNTERS.items():
         if min_roll <= roll <= max_roll:
-            return {**encounter, "roll": roll}
+            return {**encounter, KEY_ROLL: roll}
 
     # Should never reach here if data is complete
     raise ValueError(f"No harmful encounter found for roll {roll}")
@@ -725,23 +887,49 @@ ACCIDENT_ENCOUNTERS = {
 
 def get_accident_from_roll(roll: int) -> Dict:
     """
-    Get accident encounter details from a d100 roll.
+    Get accident encounter GM details from a d100 roll.
+
+    Accident encounters are critical boat/crew emergencies with complex mechanics.
+    These are the most dangerous encounters (5% chance) with cascading failure
+    conditions, multiple tests, and potential for severe consequences including
+    sinking, fire, crew loss, or complete boat destruction.
+
+    Mechanics often include:
+        - Primary tests (Dodge, Athletics, Boat Handling)
+        - Secondary tests triggered by primary failure
+        - Damage to boat components (steering, rigging, hull)
+        - Environmental hazards (drowning, fire spread, storm duration)
+        - References to WFRP boat damage rules (Page 29)
 
     Args:
         roll: The d100 roll result (1-100)
 
     Returns:
-        Dictionary containing encounter details
+        Dictionary containing encounter details with keys:
+            - title: Accident name
+            - description: Full GM description
+            - effects: List of critical effects and hazards
+            - mechanics: Dict with complex nested test/failure mechanics
+            - roll: The original roll value
 
     Raises:
-        ValueError: If roll is outside 1-100 range
+        ValueError: If roll is outside 1-100 range or no accident found
+
+    Examples:
+        >>> accident = get_accident_from_roll(5)
+        >>> accident['title']
+        'Steering'
+        >>> accident['mechanics']['damage_type']
+        'critical_hit_steering'
+        >>> accident['mechanics']['immediate_effect']
+        'Boat drifts uncontrollably'
     """
-    if roll < 1 or roll > 100:
-        raise ValueError(f"Roll must be between 1 and 100, got {roll}")
+    if roll < D100_MIN or roll > D100_MAX:
+        raise ValueError(f"Roll must be between {D100_MIN} and {D100_MAX}, got {roll}")
 
     for (min_roll, max_roll), encounter in ACCIDENT_ENCOUNTERS.items():
         if min_roll <= roll <= max_roll:
-            return {**encounter, "roll": roll}
+            return {**encounter, KEY_ROLL: roll}
 
     # Should never reach here if data is complete
     raise ValueError(f"No accident encounter found for roll {roll}")

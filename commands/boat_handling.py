@@ -1,9 +1,27 @@
 """
-Command: boat-handling
-Description: WFRP Boat Handling Test for river navigation
+Boat Handling Command Module for WFRP River Travel.
+
+This module implements boat handling tests for river navigation, which are central
+to WFRP river-based campaigns. Characters use either Sail or Row skills to navigate
+the river, with bonuses from Navigation knowledge and penalties from weather conditions.
+
+The module handles:
+- Character skill selection (Sail preferred, Row as fallback)
+- Lore (Riverways) bonus calculation (first digit of skill value)
+- Weather modifier integration from active journeys
+- WFRP Success Level calculation and doubles detection
+- Rich narrative outcomes based on success/failure degrees
+- Command logging to boat-travelling-log channel
+
+Example usage:
+    /boat-handling anara           # Basic test at default difficulty
+    /boat-handling emmerich -20    # Hard difficulty test
+    /boat-handling hildric 0 dusk  # Test at specific time of day
 """
 
 import random
+from typing import Union
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -20,10 +38,52 @@ from utils.modifier_calculator import (
 )
 
 
-def setup(bot: commands.Bot):
+# ============================================================================
+# CONSTANTS
+# ============================================================================
+
+# Success Level thresholds for outcome descriptions
+SL_ASTOUNDING = 6
+SL_IMPRESSIVE = 4
+SL_SUCCESS = 2
+SL_MARGINAL = 0
+
+# Difficulty tier names for display
+DIFFICULTY_TIERS = {
+    -50: "Impossible",
+    -40: "Futile",
+    -30: "Very Difficult",
+    -20: "Hard",
+    -10: "Difficult",
+    0: "Challenging",
+    20: "Average",
+    40: "Easy",
+    60: "Very Easy",
+}
+
+# Default time of day for wind conditions
+DEFAULT_TIME = "midday"
+
+
+# ============================================================================
+# COMMAND SETUP
+# ============================================================================
+
+
+def setup(bot: commands.Bot) -> None:
     """
     Register boat-handling command with the bot.
-    Called from main.py during bot initialization.
+
+    This function is called from main.py during bot initialization. It registers
+    both slash (/) and prefix (!) command variants, sharing the same logic through
+    _perform_boat_handling().
+
+    Args:
+        bot: The Discord bot instance to register commands with.
+
+    Note:
+        The slash command provides helpful autocomplete choices for character names
+        and time of day, improving UX compared to the prefix command.
     """
 
     # Slash command
@@ -55,7 +115,7 @@ def setup(bot: commands.Bot):
         interaction: discord.Interaction,
         character: str,
         difficulty: int = 0,
-        time_of_day: str = "midday",
+        time_of_day: str = DEFAULT_TIME,
     ):
         """Make a Boat Handling Test (Row or Sail) for a character."""
         await _perform_boat_handling(
@@ -65,7 +125,7 @@ def setup(bot: commands.Bot):
     # Prefix command
     @bot.command(name="boat-handling")
     async def boat_handling_prefix(
-        ctx, character: str, difficulty: int = 0, time_of_day: str = "midday"
+        ctx, character: str, difficulty: int = 0, time_of_day: str = DEFAULT_TIME
     ):
         """Make a Boat Handling Test (Row or Sail) for a character."""
         await _perform_boat_handling(
@@ -73,9 +133,40 @@ def setup(bot: commands.Bot):
         )
 
     async def _perform_boat_handling(
-        context, character: str, difficulty: int, time_of_day: str, is_slash: bool
-    ):
-        """Shared logic for boat handling tests."""
+        context: Union[discord.Interaction, commands.Context],
+        character: str,
+        difficulty: int,
+        time_of_day: str,
+        is_slash: bool,
+    ) -> None:
+        """
+        Perform a boat handling test with full WFRP mechanics.
+
+        This is the core logic shared by both slash and prefix commands. It handles:
+        1. Weather modifier lookup for the specified time of day
+        2. Character validation and skill determination (Sail vs Row)
+        3. Lore (Riverways) bonus calculation
+        4. Target number calculation with all modifiers
+        5. D100 roll and Success Level calculation
+        6. Doubles detection for crits/fumbles
+        7. Rich narrative outcome generation
+        8. Command logging to boat-travelling-log channel
+
+        Args:
+            context: Discord interaction (slash) or command context (prefix)
+            character: Character key (e.g., "anara", "emmerich")
+            difficulty: Base difficulty modifier (-50 to +60)
+            time_of_day: When the test occurs ("dawn", "midday", "dusk", "midnight")
+            is_slash: True if called from slash command, False if prefix command
+
+        Raises:
+            ValueError: If character doesn't exist or has no boat handling skills
+            discord.DiscordException: If Discord API call fails
+
+        Note:
+            Weather modifiers are automatically applied if a journey is active.
+            Errors are caught and displayed as user-friendly embed messages.
+        """
         try:
             # Get active weather modifiers if available
             guild_id = str(context.guild.id) if context.guild else None
@@ -175,7 +266,7 @@ def setup(bot: commands.Bot):
                     outcome = "Failure"
                     color = discord.Color.orange()
                     flavor = f"✗ {char_name} fails to maintain proper control. The vessel drifts or slows, requiring corrective action."
-                    mechanics = "**Loss of control.** Vessel goes off course owr slows significantly. Delay of 1-2 hours to correct. Minor damage possible."
+                    mechanics = "**Loss of control.** Vessel goes off course or slows significantly. Delay of 1-2 hours to correct. Minor damage possible."
                 else:
                     outcome = "Marginal Failure"
                     color = discord.Color.orange()
@@ -204,22 +295,9 @@ def setup(bot: commands.Bot):
             if lore_bonus > 0:
                 skill_breakdown += f"\n**Lore (Riverways) Bonus:** +{lore_bonus}"
 
-            # Show difficulty (base and modified if weather applies)
-            difficulty_map = {
-                -50: "Impossible",
-                -40: "Futile",
-                -30: "Very Difficult",
-                -20: "Hard",
-                -10: "Difficult",
-                0: "Challenging",
-                20: "Average",
-                40: "Easy",
-                60: "Very Easy",
-            }
-
             # Always show difficulty if it's not default Challenging or if weather is active
             if original_difficulty != 0 or weather_mods:
-                diff_name = difficulty_map.get(
+                diff_name = DIFFICULTY_TIERS.get(
                     original_difficulty, f"{original_difficulty:+d}"
                 )
 
@@ -227,7 +305,7 @@ def setup(bot: commands.Bot):
                 if weather_mods:
                     if weather_mods["boat_handling_penalty"] != 0:
                         # Weather has a penalty - show base, modifier, and final
-                        modified_diff_name = difficulty_map.get(
+                        modified_diff_name = DIFFICULTY_TIERS.get(
                             difficulty, f"{difficulty:+d}"
                         )
                         skill_breakdown += f"\n**Base Difficulty:** {diff_name} ({original_difficulty:+d})"
@@ -320,21 +398,48 @@ def setup(bot: commands.Bot):
 
         except (discord.DiscordException, KeyError, AttributeError) as e:
             if is_slash:
-                await context.response.send_message(
-                    f"❌ An error occurred: {str(e)}", ephemeral=True
-                )
+                # Use followup if response was already used/failed
+                try:
+                    if context.response.is_done():
+                        await context.followup.send(
+                            f"❌ An error occurred: {str(e)}", ephemeral=True
+                        )
+                    else:
+                        await context.response.send_message(
+                            f"❌ An error occurred: {str(e)}", ephemeral=True
+                        )
+                except (
+                    Exception
+                ):  # noqa: BLE001 - Catch-all needed for Discord API failures
+                    await context.followup.send(
+                        f"❌ An error occurred: {str(e)}", ephemeral=True
+                    )
             else:
                 await context.send(f"❌ An error occurred: {str(e)}")
 
     async def _send_command_log(
-        context,
+        context: Union[discord.Interaction, commands.Context],
         character: str,
         difficulty: int,
         time_of_day: str,
         original_difficulty: int,
         is_slash: bool,
-    ):
-        """Send command details to boat-travelling-log channel."""
+    ) -> None:
+        """
+        Send command details to boat-travelling-log channel.
+
+        Args:
+            context: Discord interaction or command context
+            character: Character key used in the command
+            difficulty: Modified difficulty value
+            time_of_day: Time of day specified
+            original_difficulty: Base difficulty before weather modifiers
+            is_slash: True if called from slash command
+
+        Note:
+            Silently fails if log channel doesn't exist or Discord API errors occur.
+            Logging should never break command execution.
+        """
         try:
             # Find the log channel
             log_channel = discord.utils.get(
@@ -356,13 +461,13 @@ def setup(bot: commands.Bot):
                 command_str = f"/boat-handling character:{character}"
                 if difficulty != 0:
                     command_str += f" difficulty:{original_difficulty}"
-                if time_of_day != "midday":
+                if time_of_day != DEFAULT_TIME:
                     command_str += f" time_of_day:{time_of_day}"
             else:
                 command_str = f"!boat-handling {character}"
                 if difficulty != 0:
                     command_str += f" {original_difficulty}"
-                if time_of_day != "midday":
+                if time_of_day != DEFAULT_TIME:
                     command_str += f" {time_of_day}"
 
             # Create log embed

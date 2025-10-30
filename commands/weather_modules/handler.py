@@ -2,10 +2,43 @@
 Weather command handler - orchestrates weather generation and display.
 
 This module provides the main business logic for weather commands, coordinating
-between weather generation, storage, display, and notifications.
+between weather generation, storage, display, and notifications. It serves as
+the central orchestrator for all weather-related operations.
+
+Key Responsibilities:
+    - Command routing and action handling
+    - Weather data generation and progression
+    - Journey state management (start, progress, end)
+    - Coordination between storage, display, and notification systems
+    - Error handling and user feedback
+    - Stage-based progression (multi-day weather generation)
+
+Architecture:
+    The handler acts as a facade, delegating to specialized modules:
+    - WeatherStorage: Persistent state and data storage
+    - WeatherMechanics: Weather generation algorithms
+    - WeatherDisplayManager: User-facing display formatting
+    - NotificationManager: GM channel notifications
+    - StageDisplayManager: Multi-day stage summaries
+
+Usage Example:
+    >>> handler = WeatherCommandHandler()
+    >>> await handler.handle_command(ctx, "next", None, None, None, False)
+    # Generates and displays next day's weather
+
+Command Flow:
+    1. Command received → handle_command() routes to action handler
+    2. Action handler validates inputs and retrieves journey state
+    3. Weather generation creates daily data (if applicable)
+    4. Display manager sends formatted embed to user
+    5. Notification manager sends GM notification
+    6. Command logged to command-log channel
 """
 
-from typing import Optional
+from typing import Any, Dict, Optional, Union
+
+import discord
+from discord.ext import commands
 
 from db.weather_storage import WeatherStorage
 from utils.weather_mechanics import (
@@ -21,20 +54,107 @@ from commands.weather_modules.display import WeatherDisplayManager
 from commands.weather_modules.stages import StageDisplayManager
 from commands.weather_modules.notifications import NotificationManager
 
+# Channel names
+CHANNEL_GM_NOTIFICATIONS = "boat-travelling-notifications"
+CHANNEL_COMMAND_LOG = "command-log"
+
+# Default journey settings
+DEFAULT_SEASON = "summer"
+DEFAULT_PROVINCE = "reikland"
+DEFAULT_STAGE_DURATION = 3
+DEFAULT_JOURNEY_DAY = 1
+
+# Error messages
+ERROR_NO_GUILD = "This command must be used in a server."
+ERROR_UNKNOWN_ACTION = "Unknown action: {action}"
+ERROR_COMMAND_FAILED = "An error occurred: {error}"
+ERROR_GENERATING_WEATHER = "Error generating weather: {error}"
+ERROR_GENERATING_STAGE = "Error generating stage: {error}"
+ERROR_STARTING_JOURNEY = "Error starting journey: {error}"
+ERROR_VIEWING_WEATHER = "Error viewing weather: {error}"
+ERROR_ENDING_JOURNEY = "Error ending journey: {error}"
+ERROR_NO_JOURNEY = (
+    "❌ No journey in progress. Use `/weather journey` to start a new journey first."
+)
+ERROR_MISSING_PARAMS = "❌ Both season and province are required to start a journey.\nExample: `/weather journey season:summer province:reikland`"
+ERROR_NO_DAY_PARAM = "❌ Day parameter is required. Example: `/weather view day:2`"
+ERROR_DAY_NOT_FOUND = "❌ No weather data found for day {day}."
+ERROR_NOT_IMPLEMENTED = "❌ This feature is not yet implemented."
+ERROR_NO_STAGE_CONFIG_GUILD = "This command must be used in a server."
+ERROR_NO_STAGE_CONFIG_JOURNEY = (
+    "❌ No journey in progress. Start a journey first with `/weather journey`."
+)
+ERROR_INVALID_STAGE_DURATION = "❌ Stage duration must be between 1 and 10 days."
+
+# Info messages
+INFO_AUTO_START_JOURNEY = "⚠️ No journey in progress. Starting new journey with default settings (Summer in Reikland)."
+INFO_JOURNEY_REPLACE = (
+    "⚠️ A journey is already in progress. Ending previous journey and starting new one."
+)
+INFO_JOURNEY_ENDED = "🏁 **Journey Ended**\n\nYour river journey has been concluded. All weather data has been saved.\nUse `/weather journey` to start a new journey."
+INFO_STAGE_CONFIG_UPDATED = "✅ Stage duration updated to {duration} days."
+
+# Message templates
+MSG_JOURNEY_START = "🗺️ **New Journey Started!**\n\n**Season:** {season}\n**Province:** {province}\n\nUse `/weather next` to generate weather for the first day."
+
+# Command log colors
+COLOR_COMMAND_LOG = 0x95A5A6  # Gray
+
+# Emoji
+EMOJI_MAP = "🗺️"
+EMOJI_FINISH = "🏁"
+EMOJI_WARNING = "⚠️"
+EMOJI_ERROR = "❌"
+EMOJI_SUCCESS = "✅"
+
 
 class WeatherCommandHandler:
     """
-    Main handler for weather commands.
+    Main handler for weather command routing and orchestration.
+
+    This class coordinates all weather-related operations, acting as the central
+    controller for the weather system. It routes commands to appropriate handlers,
+    manages journey state, generates weather data, and coordinates display and
+    notifications.
 
     Responsibilities:
-    - Route actions to appropriate methods
-    - Generate weather data
-    - Coordinate display and notifications
-    - Manage journey state
+        - Route command actions to appropriate handler methods
+        - Generate daily weather data using weather mechanics
+        - Manage journey lifecycle (start, progress, end)
+        - Coordinate between storage, display, and notification modules
+        - Handle errors and provide user feedback
+        - Support stage-based progression for multi-day travel
+        - Log command execution to command-log channel
+
+    Attributes:
+        storage (WeatherStorage): Persistent storage for journey and weather data
+        display (WeatherDisplayManager): Static class for user-facing displays
+        stage_display (StageDisplayManager): Static class for stage summaries
+        notifications (NotificationManager): Static class for GM notifications
+
+    Design Pattern:
+        This class uses a facade pattern, providing a simple interface for
+        complex weather system operations while delegating specific tasks
+        to specialized modules.
+
+    Example:
+        >>> handler = WeatherCommandHandler()
+        >>> # Generate next day's weather
+        >>> await handler.handle_command(ctx, "next", None, None, None, False)
+        >>> # Start new journey
+        >>> await handler.handle_command(ctx, "journey", "winter", "reikland", None, True)
+        >>> # View historical weather
+        >>> await handler.handle_command(ctx, "view", None, None, 5, False)
     """
 
-    def __init__(self):
-        """Initialize the handler with required dependencies."""
+    def __init__(self) -> None:
+        """
+        Initialize the handler with required dependencies.
+
+        Sets up storage access and references to display/notification modules.
+        Display and notification modules use static methods, so we reference
+        the classes directly rather than instantiating them.
+        """
         self.storage = WeatherStorage()
         # Note: display, stage_display, and notifications are classes with static methods
         # We reference them directly rather than instantiating
@@ -44,30 +164,51 @@ class WeatherCommandHandler:
 
     async def handle_command(
         self,
-        context,
+        context: Union[discord.Interaction, commands.Context],
         action: str,
         season: Optional[str],
         province: Optional[str],
         day: Optional[int],
         is_slash: bool,
-    ):
+    ) -> None:
         """
-        Route command to appropriate handler method.
+        Route command to appropriate handler method based on action.
+
+        This is the main entry point for all weather commands. It validates
+        the guild context, routes to the appropriate action handler, logs
+        successful commands, and handles any errors that occur.
 
         Args:
-            context: Discord context (interaction or ctx)
-            action: The action to perform (next, view, journey, etc.)
-            season: Season name (optional, used for journey/override)
-            province: Province name (optional, used for journey/override)
-            day: Day number (optional, used for view)
-            is_slash: Whether this is a slash command
+            context: Discord context (interaction for slash, ctx for prefix commands)
+            action: The action to perform. Valid actions:
+                - "next": Generate next day's weather
+                - "next-stage": Generate weather for full stage (multiple days)
+                - "journey": Start a new journey
+                - "view": View historical weather for a specific day
+                - "end": End the current journey
+                - "override": Override weather (not yet implemented)
+            season: Season name (required for "journey", ignored for other actions)
+            province: Province name (required for "journey", ignored for other actions)
+            day: Day number (required for "view", ignored for other actions)
+            is_slash: Whether this is a slash command (affects response method)
+
+        Returns:
+            None: Sends response directly to Discord
+
+        Raises:
+            Displays error message to user if:
+            - Command not used in a guild
+            - Unknown action specified
+            - Action handler raises an exception
+
+        Example:
+            >>> await handler.handle_command(ctx, "next", None, None, None, False)
+            >>> await handler.handle_command(interaction, "journey", "winter", "reikland", None, True)
         """
         guild_id = str(context.guild.id) if context.guild else None
 
         if not guild_id:
-            await self.display.send_error(
-                context, "This command must be used in a server.", is_slash
-            )
+            await self.display.send_error(context, ERROR_NO_GUILD, is_slash)
             return
 
         # Route to action handlers
@@ -82,26 +223,61 @@ class WeatherCommandHandler:
 
         handler_func = action_map.get(action)
         if handler_func:
-            await handler_func(context, guild_id, season, province, day, is_slash)
-            # Log command after successful execution
-            await self._send_command_log(
-                context, action, season, province, day, is_slash
-            )
+            try:
+                await handler_func(context, guild_id, season, province, day, is_slash)
+                # Log command after successful execution
+                await self._send_command_log(
+                    context, action, season, province, day, is_slash
+                )
+            except (
+                Exception
+            ) as e:  # noqa: BLE001 - Broad exception handling for user feedback
+                # Catch any errors from action handlers and display to user
+                await self.display.send_error(
+                    context, ERROR_COMMAND_FAILED.format(error=str(e)), is_slash
+                )
         else:
             await self.display.send_error(
-                context, f"Unknown action: {action}", is_slash
+                context, ERROR_UNKNOWN_ACTION.format(action=action), is_slash
             )
 
     async def _handle_next(
         self,
-        context,
+        context: Union[discord.Interaction, commands.Context],
         guild_id: str,
         _season: Optional[str],  # Unused - kept for consistent signature
         _province: Optional[str],  # Unused - kept for consistent signature
         _day: Optional[int],  # Unused - kept for consistent signature
         is_slash: bool,
-    ):
-        """Generate weather for the next day."""
+    ) -> None:
+        """
+        Generate and display weather for the next day.
+
+        Automatically starts a new journey with default settings if no journey
+        is in progress. Generates weather data for the next day, displays it
+        to the user, and sends a notification to the GM channel.
+
+        Args:
+            context: Discord context (interaction or ctx)
+            guild_id: Guild ID string for storage lookup
+            _season: Unused parameter (kept for consistent handler signature)
+            _province: Unused parameter (kept for consistent handler signature)
+            _day: Unused parameter (kept for consistent handler signature)
+            is_slash: Whether this is a slash command response
+
+        Returns:
+            None: Sends response directly to Discord
+
+        Side Effects:
+            - Auto-starts journey with default settings if none exists
+            - Increments current_day in journey state
+            - Saves generated weather data to storage
+            - Sends notification to GM channel
+            - Displays weather embed to user
+
+        Example:
+            >>> await handler._handle_next(ctx, "12345", None, None, None, False)
+        """
         try:
             journey = self.storage.get_journey_state(guild_id)
 
@@ -109,10 +285,10 @@ class WeatherCommandHandler:
             if not journey:
                 await self.display.send_info(
                     context,
-                    "⚠️ No journey in progress. Starting new journey with default settings (Summer in Reikland).",
-                    is_slash,
+                    INFO_AUTO_START_JOURNEY,
+                    is_slash=is_slash,
                 )
-                self.storage.start_journey(guild_id, "summer", "reikland")
+                self.storage.start_journey(guild_id, DEFAULT_SEASON, DEFAULT_PROVINCE)
                 journey = self.storage.get_journey_state(guild_id)
 
                 # Send initial journey start notification
@@ -120,10 +296,10 @@ class WeatherCommandHandler:
                 if guild:
                     await self.notifications.send_journey_notification(
                         guild,
-                        "boat-travelling-notifications",
+                        CHANNEL_GM_NOTIFICATIONS,
                         "start",
-                        season="summer",
-                        province="reikland",
+                        season=DEFAULT_SEASON,
+                        province=DEFAULT_PROVINCE,
                     )
 
             # Generate weather data
@@ -136,37 +312,67 @@ class WeatherCommandHandler:
             guild = context.guild if hasattr(context, "guild") else context.guild
             if guild:
                 await self.notifications.send_weather_notification(
-                    guild, "boat-travelling-notifications", weather_data
+                    guild, CHANNEL_GM_NOTIFICATIONS, weather_data
                 )
 
-        except Exception as e:
+        except (
+            Exception
+        ) as e:  # noqa: BLE001 - Broad exception handling for user feedback
             await self.display.send_error(
-                context, f"Error generating weather: {str(e)}", is_slash
+                context, ERROR_GENERATING_WEATHER.format(error=str(e)), is_slash
             )
 
     async def _handle_next_stage(
         self,
-        context,
+        context: Union[discord.Interaction, commands.Context],
         guild_id: str,
         _season: Optional[str],  # Unused - kept for consistent signature
         _province: Optional[str],  # Unused - kept for consistent signature
         _day: Optional[int],  # Unused - kept for consistent signature
         is_slash: bool,
-    ):
-        """Generate weather for the next stage (multi-day)."""
+    ) -> None:
+        """
+        Generate weather for the next stage (multi-day).
+
+        Generates weather for multiple consecutive days based on stage_duration
+        setting. Displays a summary of all days in the stage and sends a
+        notification to the GM channel.
+
+        Args:
+            context: Discord context (interaction or ctx)
+            guild_id: Guild ID string for storage lookup
+            _season: Unused parameter (kept for consistent handler signature)
+            _province: Unused parameter (kept for consistent handler signature)
+            _day: Unused parameter (kept for consistent handler signature)
+            is_slash: Whether this is a slash command response
+
+        Returns:
+            None: Sends response directly to Discord
+
+        Side Effects:
+            - Generates weather for stage_duration days
+            - Increments current_day by stage_duration
+            - Increments stage_number by 1
+            - Saves all generated weather data
+            - Sends GM notification
+            - Displays stage summary to user
+
+        Example:
+            >>> await handler._handle_next_stage(ctx, "12345", None, None, None, False)
+        """
         try:
             journey = self.storage.get_journey_state(guild_id)
 
             if not journey:
                 await self.display.send_error(
                     context,
-                    "❌ No journey in progress. Use `/weather journey` to start a new journey first.",
+                    ERROR_NO_JOURNEY,
                     is_slash,
                 )
                 return
 
             # Get stage configuration
-            stage_duration = journey.get("stage_duration", 3)
+            stage_duration = journey.get("stage_duration", DEFAULT_STAGE_DURATION)
 
             # Generate weather for each day in the stage
             stage_weathers = []
@@ -194,33 +400,61 @@ class WeatherCommandHandler:
                 # Note: total_stages is not tracked, using stage_num as placeholder
                 await self.notifications.send_stage_notification(
                     guild,
-                    "boat-travelling-notifications",
+                    CHANNEL_GM_NOTIFICATIONS,
                     stage_num,
                     stage_num,  # Using stage_num for total_stages (not tracked)
                     stage_duration,
                 )
 
-        except Exception as e:
+        except (
+            Exception
+        ) as e:  # noqa: BLE001 - Broad exception handling for user feedback
             await self.display.send_error(
-                context, f"Error generating stage: {str(e)}", is_slash
+                context, ERROR_GENERATING_STAGE.format(error=str(e)), is_slash
             )
 
     async def _handle_journey(
         self,
-        context,
+        context: Union[discord.Interaction, commands.Context],
         guild_id: str,
         season: Optional[str],
         province: Optional[str],
         _day: Optional[int],  # Unused - day is always 1 for new journeys
         is_slash: bool,
-    ):
-        """Start a new journey."""
+    ) -> None:
+        """
+        Start a new journey with specified season and province.
+
+        Validates that both season and province are provided, optionally ends
+        any existing journey, and starts a new journey with day 1. Sends
+        notifications to both user and GM channel.
+
+        Args:
+            context: Discord context (interaction or ctx)
+            guild_id: Guild ID string for storage lookup
+            season: Season name (required, validated non-null)
+            province: Province name (required, validated non-null)
+            _day: Unused parameter (kept for consistent handler signature)
+            is_slash: Whether this is a slash command response
+
+        Returns:
+            None: Sends response directly to Discord
+
+        Side Effects:
+            - Ends existing journey if present
+            - Starts new journey with day 1
+            - Saves journey state to storage
+            - Sends GM notification
+            - Displays confirmation to user
+
+        Example:
+            >>> await handler._handle_journey(ctx, "12345", "winter", "reikland", None, False)
+        """
         try:
             if not season or not province:
                 await self.display.send_error(
                     context,
-                    "❌ Both season and province are required to start a journey.\n"
-                    "Example: `/weather journey season:summer province:reikland`",
+                    ERROR_MISSING_PARAMS,
                     is_slash,
                 )
                 return
@@ -230,8 +464,8 @@ class WeatherCommandHandler:
             if existing_journey:
                 await self.display.send_info(
                     context,
-                    "⚠️ A journey is already in progress. Ending previous journey and starting new one.",
-                    is_slash,
+                    INFO_JOURNEY_REPLACE,
+                    is_slash=is_slash,
                 )
 
             # Start new journey
@@ -239,11 +473,11 @@ class WeatherCommandHandler:
 
             await self.display.send_info(
                 context,
-                f"🗺️ **New Journey Started!**\n\n"
-                f"**Season:** {season.title()}\n"
-                f"**Province:** {province.replace('_', ' ').title()}\n\n"
-                f"Use `/weather next` to generate the first day's weather.",
-                is_slash,
+                MSG_JOURNEY_START.format(
+                    season=season.title(), province=province.replace("_", " ").title()
+                )
+                + "\n\nUse `/weather next` to generate the first day's weather.",
+                is_slash=is_slash,
             )
 
             # Send journey start notification to GM channel
@@ -251,15 +485,17 @@ class WeatherCommandHandler:
             if guild:
                 await self.notifications.send_journey_notification(
                     guild,
-                    "boat-travelling-notifications",
+                    CHANNEL_GM_NOTIFICATIONS,
                     "start",
                     season=season.lower(),
                     province=province.lower(),
                 )
 
-        except Exception as e:
+        except (
+            Exception
+        ) as e:  # noqa: BLE001 - Broad exception handling for user feedback
             await self.display.send_error(
-                context, f"Error starting journey: {str(e)}", is_slash
+                context, ERROR_STARTING_JOURNEY.format(error=str(e)), is_slash
             )
 
     async def _handle_view(
@@ -490,12 +726,19 @@ class WeatherCommandHandler:
         # Determine day number and wind continuity
         if current_weather:
             new_day = self.storage.advance_day(guild_id)
-            previous_midnight = current_weather["wind_timeline"][3]
-            wind_timeline = generate_daily_wind_with_previous(previous_midnight)
-            continuity_note = (
-                f"🔄 Wind carried over from Day {current_day} midnight: "
-                f"{previous_midnight['strength']} {previous_midnight['direction']}"
-            )
+            # Check if wind_timeline exists and has at least 4 elements
+            wind_timeline_data = current_weather.get("wind_timeline", [])
+            if wind_timeline_data and len(wind_timeline_data) >= 4:
+                previous_midnight = wind_timeline_data[3]
+                wind_timeline = generate_daily_wind_with_previous(previous_midnight)
+                continuity_note = (
+                    f"🔄 Wind carried over from Day {current_day} midnight: "
+                    f"{previous_midnight['strength']} {previous_midnight['direction']}"
+                )
+            else:
+                # No valid wind timeline - generate fresh
+                wind_timeline = generate_daily_wind()
+                continuity_note = None
         else:
             new_day = current_day
             wind_timeline = generate_daily_wind()
@@ -563,7 +806,13 @@ class WeatherCommandHandler:
 
         base_temp = get_province_base_temperature(province, season)
         wind_strengths = [w["strength"] for w in wind_timeline]
-        most_common_wind = max(set(wind_strengths), key=wind_strengths.count)
+
+        # Defensive: handle empty wind_timeline
+        if not wind_strengths:
+            most_common_wind = "Calm"
+        else:
+            most_common_wind = max(set(wind_strengths), key=wind_strengths.count)
+
         perceived_temp = apply_wind_chill(actual_temp, most_common_wind)
 
         # Update cooldown trackers
@@ -630,7 +879,13 @@ class WeatherCommandHandler:
         """
         actual_temp = weather_db["temperature_actual"]
         wind_strengths = [w["strength"] for w in weather_db["wind_timeline"]]
-        most_common_wind = max(set(wind_strengths), key=wind_strengths.count)
+
+        # Defensive: handle empty wind_timeline
+        if not wind_strengths:
+            most_common_wind = "Calm"
+        else:
+            most_common_wind = max(set(wind_strengths), key=wind_strengths.count)
+
         perceived_temp = apply_wind_chill(actual_temp, most_common_wind)
 
         base_temp = get_province_base_temperature(

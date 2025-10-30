@@ -1,8 +1,79 @@
 """
-Weather persistence and storage for multi-day journeys.
+Weather Persistence and Storage for Multi-Day Journeys
 
-This module handles storing weather data across multiple days for each Discord guild,
-including wind conditions, temperature, and special weather events like cold fronts.
+Comprehensive SQLite-based storage system for managing weather state across
+multi-day river journeys in Discord guilds. Handles journey lifecycle, daily
+weather persistence, stage tracking, and special event cooldowns.
+
+Key Responsibilities:
+    - Guild journey state management (season, province, current day/stage)
+    - Daily weather record persistence (wind, temperature, special events)
+    - Stage-based progression with configurable duration (default: 3 days/stage)
+    - Special event cooldown tracking (cold fronts, heat waves)
+    - Database schema migrations for backward compatibility
+    - Multi-guild isolation (each guild has independent journey state)
+
+Database Schema:
+    1. guild_weather_state table (one row per guild):
+       - Guild identification (guild_id)
+       - Journey metadata (season, province, start date)
+       - Progress tracking (current_day, current_stage, stage_duration)
+       - Display settings (stage_display_mode: 'simple' or 'detailed')
+       - Cooldown tracking (days_since_last_cold_front, days_since_last_heat_wave)
+
+    2. daily_weather table (one row per guild per day):
+       - Day identification (guild_id, day_number)
+       - Generation metadata (generated_at timestamp)
+       - Weather data (wind_timeline JSON, weather_type, temperature)
+       - Special events (cold_front/heat_wave remaining days and total duration)
+
+Storage Features:
+    - Automatic table creation with migrations for existing databases
+    - Context manager for safe connection handling with rollback
+    - JSON serialization for complex wind timeline data
+    - UNIQUE constraints prevent duplicate day records
+    - Foreign key relationships ensure data integrity
+    - Indexed lookups for fast guild/day queries
+
+Journey Lifecycle:
+    1. start_journey(): Initialize new journey with season/province
+    2. save_daily_weather(): Store weather for specific day
+    3. get_daily_weather(): Retrieve past weather records
+    4. advance_day() or advance_stage(): Progress journey
+    5. end_journey(): Clear all journey data
+
+Special Event Cooldowns:
+    - Tracks days_since_last_cold_front and days_since_last_heat_wave
+    - 7-day cooldown enforced by weather_mechanics.py
+    - Cooldowns increment daily, reset to 0 when event starts
+    - Default value 99 = "never happened" or "cooldown expired"
+
+Usage:
+    # Initialize storage
+    storage = WeatherStorage("data/weather.db")
+
+    # Start journey
+    storage.start_journey("guild_123", "spring", "reikland", stage_duration=3)
+
+    # Save daily weather
+    storage.save_daily_weather("guild_123", 1, weather_data_dict)
+
+    # Advance time
+    new_day = storage.advance_day("guild_123")
+    # or
+    new_day, new_stage = storage.advance_stage("guild_123")
+
+    # Manage cooldowns
+    cf_cooldown, hw_cooldown = storage.get_cooldown_status("guild_123")
+    storage.increment_cooldown("guild_123", "cold_front")
+    storage.reset_cooldown("guild_123", "heat_wave")
+
+Design Principles:
+    - Multi-guild isolation (no cross-contamination between servers)
+    - Automatic schema migrations (backward compatible with old databases)
+    - Safe connection handling (context managers with rollback on error)
+    - Type hints for all public methods
+    - Testing support (set_default_db_path for in-memory testing)
 """
 
 import sqlite3
@@ -12,26 +83,173 @@ from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
 
+# =============================================================================
+# MODULE-LEVEL CONSTANTS
+# =============================================================================
+
+# Database Configuration
+DEFAULT_DB_PATH = "data/weather.db"
+DEFAULT_DB_DIRECTORY = "data"
+
+# Stage Display Modes
+STAGE_DISPLAY_MODE_SIMPLE = "simple"
+STAGE_DISPLAY_MODE_DETAILED = "detailed"
+DEFAULT_STAGE_DISPLAY_MODE = STAGE_DISPLAY_MODE_SIMPLE
+
+# Journey Defaults
+DEFAULT_CURRENT_DAY = 1
+DEFAULT_CURRENT_STAGE = 1
+DEFAULT_STAGE_DURATION = 3
+
+# Cooldown Defaults
+DEFAULT_COOLDOWN_VALUE = 99  # "Never happened" or "cooldown expired"
+COOLDOWN_NEVER_HAPPENED = 99
+
+# Special Event Types
+EVENT_TYPE_COLD_FRONT = "cold_front"
+EVENT_TYPE_HEAT_WAVE = "heat_wave"
+
+# Special Event Duration Defaults
+DEFAULT_EVENT_DAYS_REMAINING = 0
+DEFAULT_EVENT_TOTAL_DURATION = 0
+
+# Table Names
+TABLE_GUILD_WEATHER_STATE = "guild_weather_state"
+TABLE_DAILY_WEATHER = "daily_weather"
+
+# Column Names - Guild Weather State Table
+COL_GUILD_ID = "guild_id"
+COL_CURRENT_DAY = "current_day"
+COL_CURRENT_STAGE = "current_stage"
+COL_STAGE_DURATION = "stage_duration"
+COL_STAGE_DISPLAY_MODE = "stage_display_mode"
+COL_JOURNEY_START_DATE = "journey_start_date"
+COL_LAST_WEATHER_DATE = "last_weather_date"
+COL_SEASON = "season"
+COL_PROVINCE = "province"
+COL_DAYS_SINCE_LAST_COLD_FRONT = "days_since_last_cold_front"
+COL_DAYS_SINCE_LAST_HEAT_WAVE = "days_since_last_heat_wave"
+
+# Column Names - Daily Weather Table
+COL_ID = "id"
+COL_DAY_NUMBER = "day_number"
+COL_GENERATED_AT = "generated_at"
+COL_WIND_TIMELINE = "wind_timeline"
+COL_WEATHER_TYPE = "weather_type"
+COL_WEATHER_ROLL = "weather_roll"
+COL_TEMPERATURE_ACTUAL = "temperature_actual"
+COL_TEMPERATURE_CATEGORY = "temperature_category"
+COL_TEMPERATURE_ROLL = "temperature_roll"
+COL_COLD_FRONT_DAYS_REMAINING = "cold_front_days_remaining"
+COL_COLD_FRONT_TOTAL_DURATION = "cold_front_total_duration"
+COL_HEAT_WAVE_DAYS_REMAINING = "heat_wave_days_remaining"
+COL_HEAT_WAVE_TOTAL_DURATION = "heat_wave_total_duration"
+
+# Index Names
+INDEX_GUILD_DAY = "idx_guild_day"
+
 
 class WeatherStorage:
-    """Handles persistent storage of weather data for multi-day journeys."""
+    """
+    Handles persistent storage of weather data for multi-day journeys across Discord guilds.
 
-    def __init__(self, db_path: str = "data/weather.db"):
+    This class manages all database operations for journey state and daily weather records.
+    Each Discord guild can have one active journey with unlimited daily weather records.
+
+    Key Features:
+        - SQLite database with automatic schema migrations
+        - Multi-guild isolation (each guild independent)
+        - Stage-based progression (configurable days per stage)
+        - Special event cooldown tracking
+        - Safe connection handling with rollback
+        - Testing support (in-memory database option)
+
+    Database Tables:
+        - guild_weather_state: One row per guild with journey metadata
+        - daily_weather: One row per guild per day with weather details
+
+    Attributes:
+        db_path (str): Path to SQLite database file
+        _default_db_path (Optional[str]): Class-level default for testing
+
+    Thread Safety:
+        Not thread-safe. Use separate instances for concurrent access.
+
+    Examples:
+        >>> storage = WeatherStorage("data/weather.db")
+        >>> storage.start_journey("guild_123", "spring", "reikland")
+        >>> weather_data = {...}  # Wind, temperature, special events
+        >>> storage.save_daily_weather("guild_123", 1, weather_data)
+        >>> current = storage.get_current_day("guild_123")
+        1
+        >>> storage.advance_day("guild_123")
+        2
+    """
+
+    # Class variable for default database path (can be overridden for testing)
+    _default_db_path: Optional[str] = None
+
+    def __init__(self, db_path: str = DEFAULT_DB_PATH):
         """
-        Initialize database connection.
+        Initialize database connection and create schema if needed.
+
+        Creates data directory if it doesn't exist. Automatically runs init_database()
+        to create tables and perform migrations on existing databases.
 
         Args:
-            db_path: Path to SQLite database file
+            db_path: Path to SQLite database file (default: "data/weather.db")
+                    Can be ":memory:" for testing with in-memory database
+
+        Examples:
+            >>> storage = WeatherStorage()  # Uses default path
+            >>> test_storage = WeatherStorage(":memory:")  # In-memory testing
         """
+        # Use class-level default if set, otherwise use parameter
+        if self._default_db_path is not None and db_path == DEFAULT_DB_PATH:
+            db_path = self._default_db_path
+
         # Create data directory if it doesn't exist
         Path(db_path).parent.mkdir(exist_ok=True)
 
         self.db_path = db_path
         self.init_database()
 
+    @classmethod
+    def set_default_db_path(cls, path: Optional[str]) -> None:
+        """
+        Set the default database path for all new instances (primarily for testing).
+
+        This allows tests to use in-memory databases without modifying production code.
+        Set to None to reset to default behavior.
+
+        Args:
+            path: Database path to use as default (":memory:" for testing),
+                 or None to reset to default
+
+        Examples:
+            >>> WeatherStorage.set_default_db_path(":memory:")
+            >>> storage = WeatherStorage()  # Uses in-memory database
+            >>> WeatherStorage.set_default_db_path(None)  # Reset to default
+        """
+        cls._default_db_path = path
+
     @contextmanager
     def _get_connection(self):
-        """Context manager for database connections."""
+        """
+        Context manager for safe database connections with automatic commit/rollback.
+
+        Enables column access by name (row["column_name"]). Automatically commits
+        on success and rolls back on exception. Always closes connection.
+
+        Yields:
+            sqlite3.Connection: Database connection with row_factory enabled
+
+        Examples:
+            >>> with self._get_connection() as conn:
+            ...     cursor = conn.cursor()
+            ...     cursor.execute("INSERT INTO ...")
+            ...     # Auto-commits if no exception
+        """
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row  # Enable column access by name
         try:
@@ -169,12 +387,34 @@ class WeatherStorage:
             """
             )
 
-            # Add new duration tracking columns to daily_weather (Phase 1 migration)
+            # Add missing columns to daily_weather
+            try:
+                cursor.execute(
+                    """
+                    ALTER TABLE daily_weather 
+                    ADD COLUMN cold_front_days_remaining INTEGER DEFAULT 0
+                    """
+                )
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
+
             try:
                 cursor.execute(
                     """
                     ALTER TABLE daily_weather 
                     ADD COLUMN cold_front_total_duration INTEGER DEFAULT 0
+                    """
+                )
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
+
+            try:
+                cursor.execute(
+                    """
+                    ALTER TABLE daily_weather 
+                    ADD COLUMN heat_wave_days_remaining INTEGER DEFAULT 0
                     """
                 )
             except sqlite3.OperationalError:
@@ -194,21 +434,30 @@ class WeatherStorage:
 
             # Backfill logic: For active events without total_duration, set total = remaining
             # This handles the case where we upgrade mid-cold-front
-            cursor.execute(
-                """
-                UPDATE daily_weather 
-                SET cold_front_total_duration = cold_front_days_remaining 
-                WHERE cold_front_days_remaining > 0 AND cold_front_total_duration = 0
-                """
-            )
+            # Only run if the columns exist (check by attempting and catching error)
+            try:
+                cursor.execute(
+                    """
+                    UPDATE daily_weather 
+                    SET cold_front_total_duration = cold_front_days_remaining 
+                    WHERE cold_front_days_remaining > 0 AND cold_front_total_duration = 0
+                    """
+                )
+            except sqlite3.OperationalError:
+                # Columns don't exist yet or another issue - skip backfill
+                pass
 
-            cursor.execute(
-                """
-                UPDATE daily_weather 
-                SET heat_wave_total_duration = heat_wave_days_remaining 
-                WHERE heat_wave_days_remaining > 0 AND heat_wave_total_duration = 0
-                """
-            )
+            try:
+                cursor.execute(
+                    """
+                    UPDATE daily_weather 
+                    SET heat_wave_total_duration = heat_wave_days_remaining 
+                    WHERE heat_wave_days_remaining > 0 AND heat_wave_total_duration = 0
+                    """
+                )
+            except sqlite3.OperationalError:
+                # Columns don't exist yet or another issue - skip backfill
+                pass
 
             # Index for faster lookups
             cursor.execute(
@@ -219,36 +468,53 @@ class WeatherStorage:
             )
 
     def start_journey(
-        self, guild_id: str, season: str, province: str, stage_duration: int = 3
+        self,
+        guild_id: str,
+        season: str,
+        province: str,
+        stage_duration: int = DEFAULT_STAGE_DURATION,
     ) -> None:
         """
-        Start a new journey for a guild.
+        Start a new journey for a guild, clearing any existing journey data.
+
+        Deletes all previous journey state and daily weather records for the guild,
+        then creates new journey with specified parameters. Journey starts at day 1,
+        stage 1, with cooldowns set to "never happened" (99 days).
 
         Args:
-            guild_id: Discord guild ID
+            guild_id: Discord guild ID (unique identifier)
             season: Season name (spring, summer, autumn, winter)
-            province: Province name
+            province: Province name (reikland, kislev, etc.)
             stage_duration: Number of days per stage (default: 3)
+
+        Examples:
+            >>> storage.start_journey("guild_123", "spring", "reikland")
+            >>> storage.start_journey("guild_456", "winter", "kislev", stage_duration=5)
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
 
             # Delete old journey if exists
             cursor.execute(
-                "DELETE FROM guild_weather_state WHERE guild_id = ?", (guild_id,)
+                f"DELETE FROM {TABLE_GUILD_WEATHER_STATE} WHERE {COL_GUILD_ID} = ?",
+                (guild_id,),
             )
-            cursor.execute("DELETE FROM daily_weather WHERE guild_id = ?", (guild_id,))
+            cursor.execute(
+                f"DELETE FROM {TABLE_DAILY_WEATHER} WHERE {COL_GUILD_ID} = ?",
+                (guild_id,),
+            )
 
             # Create new journey
             cursor.execute(
-                """
-                INSERT INTO guild_weather_state 
-                (guild_id, current_day, current_stage, stage_duration, stage_display_mode, journey_start_date, last_weather_date, season, province)
-                VALUES (?, 1, 1, ?, 'simple', ?, ?, ?, ?)
+                f"""
+                INSERT INTO {TABLE_GUILD_WEATHER_STATE} 
+                ({COL_GUILD_ID}, {COL_CURRENT_DAY}, {COL_CURRENT_STAGE}, {COL_STAGE_DURATION}, {COL_STAGE_DISPLAY_MODE}, {COL_JOURNEY_START_DATE}, {COL_LAST_WEATHER_DATE}, {COL_SEASON}, {COL_PROVINCE})
+                VALUES (?, 1, 1, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     guild_id,
                     stage_duration,
+                    DEFAULT_STAGE_DISPLAY_MODE,
                     datetime.now().isoformat(),
                     datetime.now().isoformat(),
                     season,
@@ -260,46 +526,89 @@ class WeatherStorage:
         self, guild_id: str, day_number: int, weather_data: Dict
     ) -> None:
         """
-        Save weather for a specific day.
+        Save or update weather data for a specific day of a guild's journey.
+
+        Uses INSERT OR REPLACE to handle both new and existing day records.
+        Wind timeline is automatically serialized to JSON for storage.
+
+        Required weather_data keys:
+            - season (str): Season name
+            - province (str): Province name
+            - wind_timeline (list[dict]): Wind conditions for each time period
+            - weather_type (str): Weather condition key
+            - weather_roll (int): d100 roll that determined weather
+            - temperature_actual (int): Actual temperature in Celsius
+            - temperature_category (str): Temperature category key
+            - temperature_roll (int): d100 roll that determined temperature
+
+        Optional weather_data keys (default to 0 if not provided):
+            - cold_front_days_remaining (int): Days left in cold front
+            - cold_front_total_duration (int): Total cold front duration
+            - heat_wave_days_remaining (int): Days left in heat wave
+            - heat_wave_total_duration (int): Total heat wave duration
 
         Args:
             guild_id: Discord guild ID
-            day_number: Day number of journey
+            day_number: Day number of journey (1-indexed)
             weather_data: Dictionary containing all weather information
+
+        Raises:
+            KeyError: If required weather_data keys are missing
+
+        Examples:
+            >>> weather_data = {
+            ...     "season": "spring",
+            ...     "province": "reikland",
+            ...     "wind_timeline": [...],
+            ...     "weather_type": "rain",
+            ...     "weather_roll": 50,
+            ...     "temperature_actual": 12,
+            ...     "temperature_category": "average",
+            ...     "temperature_roll": 60
+            ... }
+            >>> storage.save_daily_weather("guild_123", 1, weather_data)
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
 
             # Convert wind_timeline to JSON string
-            wind_json = json.dumps(weather_data["wind_timeline"])
+            wind_json = json.dumps(weather_data[COL_WIND_TIMELINE])
 
             # Insert or replace daily weather
             cursor.execute(
-                """
-                INSERT OR REPLACE INTO daily_weather 
-                (guild_id, day_number, generated_at, season, province,
-                 wind_timeline, weather_type, weather_roll,
-                 temperature_actual, temperature_category, temperature_roll,
-                 cold_front_days_remaining, cold_front_total_duration,
-                 heat_wave_days_remaining, heat_wave_total_duration)
+                f"""
+                INSERT OR REPLACE INTO {TABLE_DAILY_WEATHER} 
+                ({COL_GUILD_ID}, {COL_DAY_NUMBER}, {COL_GENERATED_AT}, {COL_SEASON}, {COL_PROVINCE},
+                 {COL_WIND_TIMELINE}, {COL_WEATHER_TYPE}, {COL_WEATHER_ROLL},
+                 {COL_TEMPERATURE_ACTUAL}, {COL_TEMPERATURE_CATEGORY}, {COL_TEMPERATURE_ROLL},
+                 {COL_COLD_FRONT_DAYS_REMAINING}, {COL_COLD_FRONT_TOTAL_DURATION},
+                 {COL_HEAT_WAVE_DAYS_REMAINING}, {COL_HEAT_WAVE_TOTAL_DURATION})
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     guild_id,
                     day_number,
                     datetime.now().isoformat(),
-                    weather_data["season"],
-                    weather_data["province"],
+                    weather_data[COL_SEASON],
+                    weather_data[COL_PROVINCE],
                     wind_json,
-                    weather_data["weather_type"],
-                    weather_data["weather_roll"],
-                    weather_data["temperature_actual"],
-                    weather_data["temperature_category"],
-                    weather_data["temperature_roll"],
-                    weather_data.get("cold_front_days_remaining", 0),
-                    weather_data.get("cold_front_total_duration", 0),
-                    weather_data.get("heat_wave_days_remaining", 0),
-                    weather_data.get("heat_wave_total_duration", 0),
+                    weather_data[COL_WEATHER_TYPE],
+                    weather_data[COL_WEATHER_ROLL],
+                    weather_data[COL_TEMPERATURE_ACTUAL],
+                    weather_data[COL_TEMPERATURE_CATEGORY],
+                    weather_data[COL_TEMPERATURE_ROLL],
+                    weather_data.get(
+                        COL_COLD_FRONT_DAYS_REMAINING, DEFAULT_EVENT_DAYS_REMAINING
+                    ),
+                    weather_data.get(
+                        COL_COLD_FRONT_TOTAL_DURATION, DEFAULT_EVENT_TOTAL_DURATION
+                    ),
+                    weather_data.get(
+                        COL_HEAT_WAVE_DAYS_REMAINING, DEFAULT_EVENT_DAYS_REMAINING
+                    ),
+                    weather_data.get(
+                        COL_HEAT_WAVE_TOTAL_DURATION, DEFAULT_EVENT_TOTAL_DURATION
+                    ),
                 ),
             )
 
@@ -365,7 +674,7 @@ class WeatherStorage:
             guild_id: Discord guild ID
 
         Returns:
-            New current day number
+            New current day number (returns 1 if no journey exists)
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -389,7 +698,7 @@ class WeatherStorage:
             )
 
             row = cursor.fetchone()
-            return row["current_day"] if row else 0
+            return row["current_day"] if row else 1
 
     def advance_stage(self, guild_id: str) -> tuple[int, int]:
         """
@@ -511,30 +820,21 @@ class WeatherStorage:
             guild_id: Discord guild ID
 
         Returns:
-            Number of days in completed journey
+            Number of daily weather records deleted
         """
         with self._get_connection() as conn:
             cursor = conn.cursor()
 
-            # Get current day before deletion
-            cursor.execute(
-                """
-                SELECT current_day FROM guild_weather_state 
-                WHERE guild_id = ?
-            """,
-                (guild_id,),
-            )
-
-            row = cursor.fetchone()
-            days = row["current_day"] if row else 0
-
-            # Delete journey
+            # Delete journey state
             cursor.execute(
                 "DELETE FROM guild_weather_state WHERE guild_id = ?", (guild_id,)
             )
-            cursor.execute("DELETE FROM daily_weather WHERE guild_id = ?", (guild_id,))
 
-            return days
+            # Delete daily weather and get count
+            cursor.execute("DELETE FROM daily_weather WHERE guild_id = ?", (guild_id,))
+            deleted_count = cursor.rowcount
+
+            return deleted_count
 
     def cleanup_old_weather(self, days_to_keep: int = 30) -> int:
         """

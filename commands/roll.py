@@ -1,9 +1,49 @@
 """
-Command: roll
-Description: Roll dice with WFRP mechanics support
+Roll Dice Command
+
+Implements flexible dice rolling with full WFRP 4th Edition mechanics support.
+Handles standard dice notation (XdY+Z) and integrates with WFRP skill tests,
+success levels, and doubles classification (criticals/fumbles).
+
+Usage Examples:
+    Slash Commands:
+        /roll 1d100                         # Simple d100 roll
+        /roll 3d10                          # Roll 3d10
+        /roll 2d6+5                         # Roll with modifier
+        /roll 1d100 target:45 modifier:20   # WFRP skill test (Average difficulty)
+        /roll 1d100 target:45 modifier:-20  # WFRP hard test
+
+    Prefix Commands:
+        !roll 1d100
+        !roll 3d10
+        !roll 2d6+5
+        !roll 1d100 45 20                   # WFRP skill test with Average (+20)
+        !roll 1d100 45 -20                  # WFRP hard test
+
+WFRP 4th Edition Mechanics:
+    - Success Level (SL) = (Final Target ÷ 10) - (Roll ÷ 10)
+    - Difficulty modifiers: -50 (Impossible) to +60 (Very Easy)
+    - Default modifier: +20 (Average difficulty)
+    - Doubles on d100 can trigger criticals or fumbles
+    - Roll of 100 is always a fumble
+    - Roll of 01 counts as doubles
+
+Difficulty Reference:
+    +60: Very Easy
+    +40: Easy
+    +20: Average (default)
+      0: Challenging
+    -10: Difficult
+    -20: Hard
+    -30: Very Difficult
+    -40: Futile
+    -50: Impossible
+
+Channel Requirements:
+    - boat-travelling-log: Command logging channel (optional)
 """
 
-from typing import Optional
+from typing import Literal, Optional, Union
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -16,10 +56,53 @@ from utils.wfrp_mechanics import (
 )
 
 
-def setup(bot: commands.Bot):
+# WFRP difficulty modifiers and names
+DIFFICULTY_VERY_EASY = 60
+DIFFICULTY_EASY = 40
+DIFFICULTY_AVERAGE = 20
+DIFFICULTY_CHALLENGING = 0
+DIFFICULTY_DIFFICULT = -10
+DIFFICULTY_HARD = -20
+DIFFICULTY_VERY_DIFFICULT = -30
+DIFFICULTY_FUTILE = -40
+DIFFICULTY_IMPOSSIBLE = -50
+
+DEFAULT_DIFFICULTY = DIFFICULTY_AVERAGE
+
+DIFFICULTY_NAMES = {
+    DIFFICULTY_IMPOSSIBLE: "Impossible",
+    DIFFICULTY_FUTILE: "Futile",
+    DIFFICULTY_VERY_DIFFICULT: "Very Difficult",
+    DIFFICULTY_HARD: "Hard",
+    DIFFICULTY_DIFFICULT: "Difficult",
+    DIFFICULTY_CHALLENGING: "Challenging",
+    DIFFICULTY_AVERAGE: "Average",
+    DIFFICULTY_EASY: "Easy",
+    DIFFICULTY_VERY_EASY: "Very Easy",
+}
+
+# WFRP constants
+WFRP_SKILL_MIN = 1
+WFRP_SKILL_MAX = 100
+WFRP_ROLL_FUMBLE = 100
+WFRP_ROLL_MIN_DOUBLE = 1  # 01 counts as doubles
+
+# Display thresholds
+MAX_DICE_DISPLAY = 20  # Show individual results only if ≤20 dice
+
+# Channel names
+CHANNEL_COMMAND_LOG = "boat-travelling-log"
+
+
+def setup(bot: commands.Bot) -> None:
     """
     Register roll command with the bot.
-    Called from main.py during bot initialization.
+
+    Registers both slash (/) and prefix (!) versions of the roll command.
+    Called automatically from main.py during bot initialization.
+
+    Args:
+        bot: The Discord bot instance to register commands with
     """
 
     # Slash command
@@ -33,33 +116,72 @@ def setup(bot: commands.Bot):
         interaction: discord.Interaction,
         dice: str,
         target: Optional[int] = None,
-        modifier: int = 20,
-    ):
+        modifier: int = DEFAULT_DIFFICULTY,
+    ) -> None:
         """
-        Roll dice with flexible notation support.
+        Slash command for rolling dice with WFRP mechanics.
+
+        Supports standard dice notation (XdY+Z) and optional WFRP skill tests
+        with difficulty modifiers and doubles classification.
+
+        Args:
+            interaction: Discord interaction from slash command
+            dice: Dice notation string (e.g., "1d100", "2d6+3")
+            target: Optional WFRP skill value (1-100) for success/failure checks
+            modifier: WFRP difficulty modifier (+20 Average by default)
 
         Examples:
-            /roll 1d100
-            /roll 3d10
-            /roll 2d6+5
-            /roll 1d20-3
-            /roll 1d100 45        (Average: +20, final target = 65)
-            /roll 1d100 45 -20    (Hard: final target = 25)
+            /roll 1d100                        # Simple roll
+            /roll 1d100 45                     # Skill test vs 45 (Average +20)
+            /roll 1d100 45 -20                 # Hard skill test
         """
         await _perform_roll(interaction, dice, target, modifier, is_slash=True)
 
     # Prefix command
     @bot.command(name="roll")
     async def roll_prefix(
-        ctx, dice: str, target: Optional[int] = None, modifier: int = 20
-    ):
-        """Roll dice with flexible notation support."""
+        ctx: commands.Context,
+        dice: str,
+        target: Optional[int] = None,
+        modifier: int = DEFAULT_DIFFICULTY,
+    ) -> None:
+        """
+        Prefix command for rolling dice with WFRP mechanics.
+
+        Usage:
+            !roll 1d100
+            !roll 2d6+5
+            !roll 1d100 45 20    # Skill test with Average difficulty
+
+        Args:
+            ctx: Command context
+            dice: Dice notation string
+            target: Optional WFRP skill value (1-100)
+            modifier: WFRP difficulty modifier
+        """
         await _perform_roll(ctx, dice, target, modifier, is_slash=False)
 
     async def _perform_roll(
-        context, dice: str, target: Optional[int], modifier: int, is_slash: bool
-    ):
-        """Shared logic for both slash and prefix roll commands."""
+        context: Union[discord.Interaction, commands.Context],
+        dice: str,
+        target: Optional[int],
+        modifier: int,
+        is_slash: bool,
+    ) -> None:
+        """
+        Shared logic for both slash and prefix roll commands.
+
+        Handles dice parsing, rolling, WFRP mechanics, embed generation,
+        and command logging. Implements defensive error handling for Discord
+        API failures.
+
+        Args:
+            context: Discord interaction or command context
+            dice: Dice notation string to parse and roll
+            target: Optional WFRP skill target for success checks
+            modifier: WFRP difficulty modifier to apply to target
+            is_slash: True for slash commands, False for prefix commands
+        """
         try:
             # Parse the dice notation
             num_dice, die_size, dice_modifier = parse_dice_notation(dice)
@@ -79,7 +201,7 @@ def setup(bot: commands.Bot):
             embed.add_field(name="Roll", value=f"`{notation_display}`", inline=False)
 
             # Show individual results if reasonable
-            if num_dice <= 20:
+            if num_dice <= MAX_DICE_DISPLAY:
                 results_str = ", ".join(str(r) for r in results)
                 embed.add_field(name="Results", value=f"[{results_str}]", inline=False)
             else:
@@ -101,21 +223,10 @@ def setup(bot: commands.Bot):
                 final_target = target + modifier
 
                 # Clamp to valid range
-                final_target = max(1, min(100, final_target))
+                final_target = max(WFRP_SKILL_MIN, min(WFRP_SKILL_MAX, final_target))
 
                 # Show WFRP info
-                difficulty_map = {
-                    -50: "Impossible",
-                    -40: "Futile",
-                    -30: "Very Difficult",
-                    -20: "Hard",
-                    -10: "Difficult",
-                    0: "Challenging",
-                    20: "Average",
-                    40: "Easy",
-                    60: "Very Easy",
-                }
-                difficulty_name = difficulty_map.get(modifier, f"{modifier:+d}")
+                difficulty_name = DIFFICULTY_NAMES.get(modifier, f"{modifier:+d}")
 
                 embed.add_field(
                     name="WFRP Target",
@@ -126,8 +237,10 @@ def setup(bot: commands.Bot):
                 roll_val = results[0]
 
                 # Validate target range
-                if target < 1 or target > 100:
-                    raise ValueError("Target must be between 1 and 100")
+                if target < WFRP_SKILL_MIN or target > WFRP_SKILL_MAX:
+                    raise ValueError(
+                        f"Target must be between {WFRP_SKILL_MIN} and {WFRP_SKILL_MAX}"
+                    )
 
                 # Calculate Success Level (SL) - WFRP 4e formula
                 sl = (final_target // 10) - (roll_val // 10)
@@ -150,11 +263,13 @@ def setup(bot: commands.Bot):
                 embed.add_field(name="Result", value=result_text, inline=False)
 
                 # 100 is always a fumble
-                if roll_val == 100:
+                if roll_val == WFRP_ROLL_FUMBLE:
                     classification = "fumble"
                 else:
                     # treat 1 as the low double (01) and detect matching-digit doubles
-                    is_double = roll_val == 1 or (roll_val // 10) == (roll_val % 10)
+                    is_double = roll_val == WFRP_ROLL_MIN_DOUBLE or (
+                        roll_val // 10
+                    ) == (roll_val % 10)
                     if not is_double:
                         classification = "none"
                     else:
@@ -199,23 +314,55 @@ def setup(bot: commands.Bot):
             else:
                 await context.send(embed=error_embed)
 
-        except (discord.DiscordException, AttributeError) as e:
-            # Handle unexpected errors
+        except (discord.DiscordException, AttributeError) as e:  # noqa: BLE001
+            # Handle unexpected errors (broad exception intentional for user safety)
             if is_slash:
-                await context.response.send_message(
-                    f"❌ An error occurred: {str(e)}", ephemeral=True
-                )
+                # Use followup if response was already used/failed
+                try:
+                    if context.response.is_done():
+                        await context.followup.send(
+                            f"❌ An error occurred: {str(e)}", ephemeral=True
+                        )
+                    else:
+                        await context.response.send_message(
+                            f"❌ An error occurred: {str(e)}", ephemeral=True
+                        )
+                except Exception:  # noqa: BLE001, S110
+                    # Even followup failed, last resort attempt (broad exception intentional)
+                    await context.followup.send(
+                        f"❌ An error occurred: {str(e)}", ephemeral=True
+                    )
             else:
                 await context.send(f"❌ An error occurred: {str(e)}")
 
     async def _send_command_log(
-        context, dice: str, target: Optional[int], modifier: int, is_slash: bool
-    ):
-        """Send command details to boat-travelling-log channel."""
+        context: Union[discord.Interaction, commands.Context],
+        dice: str,
+        target: Optional[int],
+        modifier: int,
+        is_slash: bool,
+    ) -> None:
+        """
+        Send command details to boat-travelling-log channel.
+
+        Logs all roll commands with user info, dice notation, and WFRP
+        parameters. Helps track command usage and debug issues.
+
+        Args:
+            context: Discord interaction or command context
+            dice: Dice notation that was rolled
+            target: Optional WFRP target value
+            modifier: WFRP difficulty modifier
+            is_slash: True for slash commands, False for prefix commands
+
+        Note:
+            Fails silently if log channel doesn't exist or bot lacks permissions.
+            Logging is optional and should not break the main command flow.
+        """
         try:
             # Find the log channel
             log_channel = discord.utils.get(
-                context.guild.text_channels, name="boat-travelling-log"
+                context.guild.text_channels, name=CHANNEL_COMMAND_LOG
             )
             if not log_channel:
                 return  # Silently fail if log channel doesn't exist
@@ -233,13 +380,13 @@ def setup(bot: commands.Bot):
                 command_str = f"/roll dice:{dice}"
                 if target is not None:
                     command_str += f" target:{target}"
-                if modifier != 20:
+                if modifier != DEFAULT_DIFFICULTY:
                     command_str += f" modifier:{modifier}"
             else:
                 command_str = f"!roll {dice}"
                 if target is not None:
                     command_str += f" {target}"
-                if modifier != 20:
+                if modifier != DEFAULT_DIFFICULTY:
                     command_str += f" {modifier}"
 
             # Create log embed

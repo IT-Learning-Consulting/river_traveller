@@ -1,23 +1,333 @@
 # Coding Conventions for Travelling-Bot
 
-> **Purpose:** Code style, naming conventions, and project standards for WFRP Discord bot development
-> 
+> **Purpose:** Comprehensive code style guide, naming conventions, and project standards for WFRP Discord bot development
+> **Target Audience:** AI agents (Claude 4.5 Sonnet) and human developers
+> **Companion Documents:** [CODEBASE_CONTEXT.md](CODEBASE_CONTEXT.md) (architecture) | [refactor_plan.md](../../refactor_plan.md) (refactoring guide)
 > **Last Updated:** October 30, 2025
+> **Version:** 2.0.0
+
+---
+
+## Quick Start for AI Agents
+
+**If you're an AI agent working on this codebase:**
+
+1. **Read this entire document first** (20-30 minutes) - it contains critical patterns you must follow
+2. **Reference CODEBASE_CONTEXT.md** when you need to understand where code lives or how systems integrate
+3. **Follow naming conventions strictly** - inconsistent naming creates technical debt
+4. **Use the provided templates** - they ensure consistency across the codebase
+5. **Test everything** - no exceptions
+
+**Most Important Sections:**
+- [File Organization](#file-organization) - Where to put code
+- [Naming Conventions](#naming-conventions) - How to name things
+- [Code Organization Patterns](#code-organization-patterns) - Standard templates
+- [Type Hints and Documentation](#type-hints-and-documentation) - Required docstring format
+- [Discord Patterns](#discord-patterns) - Discord-specific conventions
 
 ---
 
 ## Table of Contents
-1. [File Organization](#file-organization)
-2. [Naming Conventions](#naming-conventions)
-3. [Code Organization Patterns](#code-organization-patterns)
-4. [Type Hints and Documentation](#type-hints-and-documentation)
-5. [Error Handling](#error-handling)
-6. [Discord Patterns](#discord-patterns)
-7. [Testing Standards](#testing-standards)
-8. [Git Commit Conventions](#git-commit-conventions)
-9. [Code Style Guidelines](#code-style-guidelines)
-10. [Configuration Files](#configuration-files)
-11. [Deployment](#deployment)
+1. [AI Agent Best Practices](#ai-agent-best-practices) ⭐ **START HERE**
+2. [File Organization](#file-organization)
+3. [Naming Conventions](#naming-conventions)
+4. [Code Organization Patterns](#code-organization-patterns)
+5. [Type Hints and Documentation](#type-hints-and-documentation)
+6. [Error Handling](#error-handling)
+7. [Discord Patterns](#discord-patterns)
+8. [Testing Standards](#testing-standards)
+9. [Git Commit Conventions](#git-commit-conventions)
+10. [Code Style Guidelines](#code-style-guidelines)
+11. [Configuration Files](#configuration-files)
+12. [Deployment](#deployment)
+
+---
+
+## AI Agent Best Practices
+
+**⭐ CRITICAL FOR AI AGENTS** - This section explains how to work effectively with this codebase.
+
+### Understanding the Codebase
+
+**Before making any changes:**
+
+1. **Read the architecture docs** (30-45 minutes total):
+   - [CODEBASE_CONTEXT.md](CODEBASE_CONTEXT.md) - Complete codebase map with file-by-file explanations
+   - This file (CONVENTIONS.md) - Coding standards and patterns
+   - [refactor_plan.md](../../refactor_plan.md) - If doing refactoring work
+
+2. **Understand the domain**:
+   - This is a **Warhammer Fantasy Roleplay (WFRP) 4th Edition** bot
+   - Implements specific WFRP rules (d100 tests, Success Levels, doubles for crits/fumbles)
+   - Domain knowledge is embedded in comments and docstrings - READ THEM
+
+3. **Identify the subsystem** you're working in:
+   - **Commands** (`/commands`) - Discord interaction layer
+   - **Utils** (`/utils`) - Pure game mechanics
+   - **Database** (`/db`) - Data persistence and lookup tables
+   - **Weather** (`/commands/weather_modules`) - Complex multi-day weather system
+   - Each subsystem has different patterns and responsibilities
+
+### Making Changes Safely
+
+**Step-by-step process for any code change:**
+
+1. **Locate existing code**:
+   ```bash
+   # Find files by pattern
+   grep -r "function_name" --include="*.py"
+
+   # Find class definitions
+   grep -r "class ClassName" --include="*.py"
+   ```
+
+2. **Read surrounding context**:
+   - Don't just read the function - read the whole file
+   - Understand the module's purpose (check docstring at top)
+   - Look for related functions and how they interact
+   - Check imports to understand dependencies
+
+3. **Identify tests**:
+   - Tests mirror source structure: `commands/roll.py` → `tests/commands/test_roll.py`
+   - Read existing tests to understand expected behavior
+   - Tests document the API contract - don't break them!
+
+4. **Make minimal changes**:
+   - Change ONLY what's necessary
+   - Don't "improve" unrelated code (scope creep)
+   - One logical change per commit
+
+5. **Update tests immediately**:
+   - Modify existing tests if behavior changed
+   - Add new tests for new functionality
+   - Run tests BEFORE moving to next task: `pytest tests/`
+
+6. **Verify manually** (for Discord commands):
+   - Bot commands need manual testing in Discord
+   - Test both slash (`/command`) and prefix (`!command`) versions
+   - Test error cases (invalid input, missing data, etc.)
+
+### Common AI Agent Mistakes (Avoid These!)
+
+**1. Ignoring Existing Patterns**
+```python
+# ❌ BAD - Inventing new patterns
+def get_data(id):
+    return data_store[id]
+
+# ✅ GOOD - Following existing conventions
+def get_character(character_key: str) -> Dict[str, Any]:
+    """Get character data by key (follows existing pattern)."""
+    if character_key not in CHARACTERS:
+        raise ValueError(f"Character '{character_key}' not found")
+    return CHARACTERS[character_key]
+```
+
+**2. Breaking Type Safety**
+```python
+# ❌ BAD - Returning anonymous dicts
+def generate_weather():
+    return {"temp": 15, "wind": "strong"}
+
+# ✅ GOOD - Using dataclasses
+@dataclass
+class WeatherCondition:
+    temperature: int
+    wind_strength: str
+
+def generate_weather() -> WeatherCondition:
+    return WeatherCondition(temperature=15, wind_strength="strong")
+```
+
+**3. Mixing Concerns**
+```python
+# ❌ BAD - Discord code in business logic
+def calculate_boat_penalty(wind: str) -> int:
+    channel = discord.utils.get(guild.channels, name="log")
+    penalty = WIND_PENALTIES[wind]
+    await channel.send(f"Penalty: {penalty}")
+    return penalty
+
+# ✅ GOOD - Pure business logic
+def calculate_boat_penalty(wind: str) -> int:
+    """Calculate penalty from wind (pure function, no I/O)."""
+    return WIND_PENALTIES.get(wind, 0)
+```
+
+**4. Not Testing**
+```python
+# ❌ BAD - Writing code without tests
+def complex_weather_calculation(params):
+    # 50 lines of complex logic
+    # No tests = bugs waiting to happen
+    pass
+
+# ✅ GOOD - TDD approach
+def test_weather_calculation_cold_front():
+    """Test weather calculation during cold front."""
+    result = calculate_weather(season="winter", event="cold_front")
+    assert result.temperature < 0
+    assert result.modifier == -10
+
+def calculate_weather(season: str, event: str) -> WeatherResult:
+    """Calculate weather (tested function)."""
+    pass
+```
+
+**5. Hardcoding Values**
+```python
+# ❌ BAD - Magic numbers
+def check_cold_front(roll):
+    if roll == 2:  # What is 2? Why 2?
+        return True
+
+# ✅ GOOD - Named constants
+COLD_FRONT_TRIGGER_ROLL = 2  # 1% chance on d100
+COLD_FRONT_COOLDOWN_DAYS = 7
+
+def check_cold_front(roll: int, cooldown_days: int) -> bool:
+    """Check if cold front triggers (1% chance, 7-day cooldown)."""
+    return roll == COLD_FRONT_TRIGGER_ROLL and cooldown_days >= COLD_FRONT_COOLDOWN_DAYS
+```
+
+### Understanding Discord Bot Patterns
+
+**This bot uses a dual-command system:**
+- **Slash commands** (`/roll 3d6`) - Modern Discord UI, uses `discord.Interaction`
+- **Prefix commands** (`!roll 3d6`) - Legacy text-based, uses `discord.ext.commands.Context`
+
+**Every command file follows this pattern:**
+```python
+def setup(bot: commands.Bot):
+    """Entry point called by main.py."""
+
+    @bot.tree.command(name="roll")  # Slash command
+    async def roll_slash(interaction: discord.Interaction, dice: str):
+        await _perform_roll(interaction, dice, is_slash=True)
+
+    @bot.command(name="roll")  # Prefix command
+    async def roll_prefix(ctx, dice: str):
+        await _perform_roll(ctx, dice, is_slash=False)
+
+    async def _perform_roll(context, dice: str, is_slash: bool):
+        """Shared logic for both command types."""
+        # Business logic here
+        pass
+```
+
+**Why this matters:**
+- Changes to ONE command must support BOTH interfaces
+- The `is_slash` parameter controls response method:
+  - Slash: `interaction.response.send_message()`
+  - Prefix: `ctx.send()`
+- Test both versions when making changes!
+
+### Project-Specific Knowledge
+
+**WFRP 4e Game Rules (critical for implementation):**
+- **d100 Tests:** Roll ≤ (skill + modifier) to succeed
+- **Success Levels (SL):** (target tens digit) - (roll tens digit)
+  - Example: Roll 35 vs target 62 → SL = 6 - 3 = +3
+- **Doubles:** Matching digits (11, 22, 33, etc.)
+  - Doubles ≤ target = critical success
+  - Doubles > target = fumble
+- **Special cases:**
+  - Roll of 1 treated as 01 (low double)
+  - Roll of 100 always fumble (even if skill is 100+)
+
+**Weather System Complexity:**
+- Multi-day journeys with persistent state
+- 4 time periods per day (dawn/midday/dusk/midnight)
+- Special events (cold fronts 1-5 days, heat waves 11-20 days)
+- 7-day cooldown between events
+- Daily temperature variation during events
+- Mutual exclusivity (only one event type at a time)
+- See [CODEBASE_CONTEXT.md](CODEBASE_CONTEXT.md) Section 13 for details
+
+**Database Architecture:**
+- SQLite for journey persistence (`data/weather.db`)
+- Python dicts for static game data (`db/character_data.py`, `db/weather_data.py`)
+- Context managers for connections (prevents resource warnings)
+- Migration-friendly schema (can add columns with defaults)
+
+### Code Review Checklist
+
+**Before submitting code, verify:**
+
+- [ ] **Follows existing patterns** - Matches similar code in the codebase
+- [ ] **Type hints** - All function signatures have type annotations
+- [ ] **Docstrings** - Google-style with Args/Returns/Raises/Examples
+- [ ] **Tests** - New code has tests, existing tests still pass
+- [ ] **No Discord in business logic** - Services are pure Python
+- [ ] **No magic numbers** - Constants have descriptive names
+- [ ] **Error handling** - Try-except with appropriate error messages
+- [ ] **Separation of concerns** - Code in correct layer (command/service/data)
+- [ ] **Manual testing** - If Discord command, tested in actual Discord
+- [ ] **No regressions** - Existing functionality still works
+- [ ] **Commit message** - Follows conventions (feat/fix/refactor/test/docs)
+
+### When You Get Stuck
+
+**If you encounter issues:**
+
+1. **Read the error message carefully** - It usually tells you exactly what's wrong
+2. **Check existing similar code** - Find a working example and follow its pattern
+3. **Review relevant documentation section**:
+   - Unclear where code goes? → [File Organization](#file-organization)
+   - Don't know naming convention? → [Naming Conventions](#naming-conventions)
+   - Unsure about Discord patterns? → [Discord Patterns](#discord-patterns)
+   - Need test examples? → [Testing Standards](#testing-standards)
+4. **Check CODEBASE_CONTEXT.md** - Has detailed explanations of every module
+5. **Look at git history** - `git log --follow <file>` shows evolution and rationale
+6. **Try multiple approaches** - Spend 10-15 minutes debugging before asking
+7. **Document and move on** - If blocked, document the issue and continue with other tasks
+8. **Ask for clarification ONLY if** - You've exhausted all options and it's blocking critical work
+
+### Autonomous Operation Guidelines
+
+**The user expects minimal interaction. Work independently by:**
+
+1. **Making reasonable decisions** - Use your judgment when documentation provides guidance
+2. **Following existing patterns** - When in doubt, copy what's already working
+3. **Testing frequently** - Catch issues early with `pytest tests/`
+4. **Using todo lists** - Keep the user informed via TodoWrite tool
+5. **Documenting assumptions** - Leave comments explaining your choices
+6. **Maintaining momentum** - Complete full sections without pausing
+
+**Decision-making framework:**
+```
+Can I find an example in the codebase?
+  → YES: Copy that pattern
+  → NO: Check documentation
+
+Is it in documentation?
+  → YES: Follow documented approach
+  → NO: Is there a clear "best practice"?
+
+Is it a minor implementation detail?
+  → YES: Make reasonable choice, document in comment
+  → NO: Is it blocking critical work?
+
+Will my choice break existing functionality?
+  → NO: Proceed, test thoroughly
+  → YES: Try alternative approach or document as blocker
+```
+
+**You should proceed without asking about:**
+- Variable/function/class names (follow naming conventions)
+- Code organization within files
+- Which test cases to write
+- Error message wording
+- Helper function structure
+- Import organization
+- Comment placement
+- Formatting choices
+
+**Only ask if:**
+- Fundamental architectural decision with no documentation guidance
+- Breaking change that affects external APIs/users
+- Critical information is missing from all documentation
+- Multiple valid approaches with significant trade-offs
 
 ---
 

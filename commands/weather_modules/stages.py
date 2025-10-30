@@ -1,50 +1,142 @@
 """
 Stage Display Manager for Weather Commands
 
-This module handles multi-day stage displays for weather data.
-When journeys are broken into stages, this provides consolidated
-views of multiple days of weather at once.
+This module handles multi-day stage displays for weather data. When journeys
+are broken into stages, this provides consolidated views of multiple days of
+weather at once for efficient planning and review.
+
+Key Responsibilities:
+    - Display consolidated weather summaries for multi-day stages
+    - Show progress through journey stages
+    - Provide overview of weather patterns across entire journeys
+    - Format condensed weather information for quick scanning
 
 Design Principles:
-- Efficient display: Show multiple days in compact format
-- Clear navigation: Users can see progress through stages
-- Consistency: Uses same formatters as single-day displays
+    - Efficient display: Show multiple days in compact format
+    - Clear navigation: Users can see progress through stages
+    - Consistency: Uses same formatters as single-day displays
+    - Scalability: Handles variable stage durations gracefully
+
+Display Modes:
+    - Stage Summary: Shows all days in a single stage with condensed info
+    - Journey Overview: Shows all stages in journey with statistics
+    - Day Summary: Individual day condensed into 3-4 lines
+
+Usage Example:
+    >>> # Show stage summary
+    >>> await StageDisplayManager.show_stage_summary(ctx, 2, stage_days, False)
+    >>> # Show all stages
+    >>> await StageDisplayManager.show_all_stages(ctx, all_stages, True)
 """
 
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional, Union
+
 import discord
+from discord.ext import commands
 from datetime import datetime, timezone
 
 from .formatters import WeatherFormatters
 
+# Embed colors
+COLOR_STAGE = 0x9B59B6  # Purple for stages
+
+# Default values
+DEFAULT_PROVINCE = "Unknown"
+DEFAULT_SEASON = "spring"
+DEFAULT_WEATHER = "fair"
+DEFAULT_TEMPERATURE = 15
+DEFAULT_DAY = 1
+
+# Display messages
+MSG_NO_STAGE_DATA = "No weather data available for this stage."
+MSG_NO_JOURNEY_DATA = "No journey data available."
+MSG_NO_DATA = "No data"
+MSG_CALM_WIND = "Calm"
+
+# Footer messages
+FOOTER_VIEW_DAY = "Use /weather [day] to see detailed weather for a specific day"
+FOOTER_VIEW_STAGE = "Use /weather stage [number] to see details for a specific stage"
+
+# Emoji
+EMOJI_SHIP = "🚢"
+EMOJI_MAP = "🗺️"
+EMOJI_CALENDAR = "📅"
+EMOJI_TEMPERATURE = "🌡️"
+EMOJI_WARNING = "⚠️"
+EMOJI_WIND = "💨"
+EMOJI_COLD_FRONT = "❄️"
+EMOJI_HEAT_WAVE = "🔥"
+
 
 class StageDisplayManager:
     """
-    Manages multi-day stage displays for weather data.
+    Manages multi-day stage displays and journey overviews.
 
-    This class is responsible for:
-    - Creating stage summary embeds showing multiple days
-    - Formatting condensed weather information
-    - Providing overview of weather patterns across stages
+    This class provides static methods for displaying consolidated weather
+    information across multiple days (stages) or multiple stages (journeys).
+    All displays are condensed for efficient scanning while preserving
+    essential mechanical information.
+
+    Responsibilities:
+        - Create stage summary embeds showing all days in a stage
+        - Format condensed daily weather summaries
+        - Display journey overviews with all stages
+        - Handle wind, temperature, and effect summarization
+        - Show special event progress (cold fronts, heat waves)
+
+    Design Pattern:
+        All methods are static as this class maintains no state. It serves
+        purely as a utility namespace for stage display operations.
+
+    Display Strategy:
+        - Condensed: Each day shown in 3-4 lines
+        - Patterns: Shows changing conditions (calm → bracing wind)
+        - Statistics: Temperature ranges, weather type counts
+        - Progress: Special event day counters
+
+    Example:
+        >>> # Display a single stage
+        >>> stage_days = [day1_data, day2_data, day3_data]
+        >>> await StageDisplayManager.show_stage_summary(ctx, 2, stage_days, False)
+        >>> # Display all stages
+        >>> all_stages = {1: [...], 2: [...], 3: [...]}
+        >>> await StageDisplayManager.show_all_stages(ctx, all_stages, True)
     """
 
-    COLOR_STAGE = 0x9B59B6  # Purple for stages
+    COLOR_STAGE = COLOR_STAGE
 
     @staticmethod
     async def show_stage_summary(
-        context,
+        context: Union[discord.Interaction, commands.Context],
         stage_number: int,
         stage_data: List[Dict[str, Any]],
         is_slash: bool = False,
     ) -> None:
         """
-        Display a summary of weather for an entire stage.
+        Display a consolidated summary of weather for an entire stage.
+
+        Creates an embed showing condensed weather information for each day
+        in the stage. Each day displays weather type, temperature, wind
+        patterns, and any special effects in 3-4 lines.
 
         Args:
-            context: Discord context (can be ctx for prefix or interaction for slash)
-            stage_number: The stage number being displayed
-            stage_data: List of weather data dictionaries, one per day
+            context: Discord context (interaction for slash, ctx for prefix commands)
+            stage_number: The stage number being displayed (1-based)
+            stage_data: List of weather data dictionaries, one per day.
+                Each dict should contain keys like: day, weather_type,
+                temperature, wind_timeline, weather_effects
             is_slash: Whether this is a slash command response
+
+        Returns:
+            None: Sends embed directly to Discord
+
+        Example:
+            >>> stage_days = [
+            ...     {"day": 1, "weather_type": "rain", "temperature": 12, ...},
+            ...     {"day": 2, "weather_type": "fair", "temperature": 15, ...},
+            ...     {"day": 3, "weather_type": "fair", "temperature": 14, ...}
+            ... ]
+            >>> await StageDisplayManager.show_stage_summary(ctx, 2, stage_days, False)
         """
         embed = StageDisplayManager._create_stage_embed(stage_number, stage_data)
         await StageDisplayManager._send_embed(context, embed, is_slash)
@@ -65,23 +157,24 @@ class StageDisplayManager:
         """
         if not stage_data:
             return discord.Embed(
-                title=f"🚢 Stage {stage_number}",
-                description="No weather data available for this stage.",
+                title=f"{EMOJI_SHIP} Stage {stage_number}",
+                description=MSG_NO_STAGE_DATA,
                 color=StageDisplayManager.COLOR_STAGE,
             )
 
         # Get basic info from first day
         first_day = stage_data[0]
-        province = first_day.get("province", "Unknown")
-        season = first_day.get("season", "spring")
+        province = first_day.get("province", DEFAULT_PROVINCE)
+        season = first_day.get("season", DEFAULT_SEASON)
 
         province_name = WeatherFormatters.format_province_name(province)
         season_name = WeatherFormatters.format_season_name(season)
 
         # Create embed
+        plural = "s" if len(stage_data) != 1 else ""
         embed = discord.Embed(
-            title=f"🚢 Stage {stage_number} Weather Summary",
-            description=f"**{province_name}** | **{season_name}** | {len(stage_data)} day{'s' if len(stage_data) != 1 else ''}",
+            title=f"{EMOJI_SHIP} Stage {stage_number} Weather Summary",
+            description=f"**{province_name}** | **{season_name}** | {len(stage_data)} day{plural}",
             color=StageDisplayManager.COLOR_STAGE,
             timestamp=datetime.now(timezone.utc),
         )
@@ -89,30 +182,52 @@ class StageDisplayManager:
         # Add each day as a field
         for day_data in stage_data:
             day_text = StageDisplayManager._format_day_summary(day_data)
-            day_num = day_data.get("day", "?")
+            day_num = day_data.get("day", DEFAULT_DAY)
 
-            embed.add_field(name=f"📅 Day {day_num}", value=day_text, inline=False)
+            embed.add_field(
+                name=f"{EMOJI_CALENDAR} Day {day_num}", value=day_text, inline=False
+            )
 
         # Add footer
-        embed.set_footer(
-            text="Use /weather [day] to see detailed weather for a specific day"
-        )
+        embed.set_footer(text=FOOTER_VIEW_DAY)
 
         return embed
 
     @staticmethod
     def _format_day_summary(day_data: Dict[str, Any]) -> str:
         """
-        Format a single day's weather into a condensed summary.
+        Format a single day's weather into a condensed 3-4 line summary.
+
+        Creates a compact display showing weather type, temperature, wind
+        conditions, effects, and any special events. Designed for quick
+        scanning while preserving essential information.
 
         Args:
-            day_data: Dictionary containing weather information
+            day_data: Dictionary containing complete weather information with keys:
+                - weather_type: Type of weather (e.g., "rain", "snow")
+                - actual_temp or temperature: Temperature value
+                - wind_timeline: List of wind conditions
+                - weather_effects: List of active effect strings
+                - cold_front_days_remaining: Optional cold front counter
+                - heat_wave_days_remaining: Optional heat wave counter
 
         Returns:
-            str: Condensed weather summary
+            str: Multi-line condensed summary (typically 3-4 lines)
+
+        Example:
+            >>> day = {
+            ...     "weather_type": "rain",
+            ...     "temperature": 12,
+            ...     "wind_timeline": [...],
+            ...     "weather_effects": ["Visibility reduced"]
+            ... }
+            >>> StageDisplayManager._format_day_summary(day)
+            '🌧️ **Rain** | 🌡️ 12°C\\n💨 Light North → Bracing East\\n⚠️ Visibility reduced'
         """
-        weather_type = day_data.get("weather_type", "fair")
-        temperature = day_data.get("actual_temp", day_data.get("temperature", 15))
+        weather_type = day_data.get("weather_type", DEFAULT_WEATHER)
+        temperature = day_data.get(
+            "actual_temp", day_data.get("temperature", DEFAULT_TEMPERATURE)
+        )
         wind_timeline = day_data.get("wind_timeline", [])
         weather_effects = day_data.get("weather_effects", [])
 
@@ -129,15 +244,15 @@ class StageDisplayManager:
         # Add wind summary (condensed)
         wind_summary = StageDisplayManager._format_condensed_wind(wind_timeline)
         if wind_summary:
-            parts.append(f"💨 {wind_summary}")
+            parts.append(f"{EMOJI_WIND} {wind_summary}")
 
         # Add effects if any (show count if many)
         if weather_effects:
             if len(weather_effects) <= 2:
                 for effect in weather_effects:
-                    parts.append(f"⚠️ {effect}")
+                    parts.append(f"{EMOJI_WARNING} {effect}")
             else:
-                parts.append(f"⚠️ {len(weather_effects)} weather effects")
+                parts.append(f"{EMOJI_WARNING} {len(weather_effects)} weather effects")
 
         # Add special event information with day counters
         cold_front_days = day_data.get("cold_front_days_remaining", 0)
@@ -147,14 +262,18 @@ class StageDisplayManager:
 
         if cold_front_days > 0 and cold_front_total > 0:
             days_elapsed = cold_front_total - cold_front_days + 1
-            event_text = f"❄️ Cold Front (Day {days_elapsed}/{cold_front_total})"
+            event_text = (
+                f"{EMOJI_COLD_FRONT} Cold Front (Day {days_elapsed}/{cold_front_total})"
+            )
             if cold_front_days == 1:
                 event_text += " (Final Day)"
             parts.append(event_text)
 
         if heat_wave_days > 0 and heat_wave_total > 0:
             days_elapsed = heat_wave_total - heat_wave_days + 1
-            event_text = f"🔥 Heat Wave (Day {days_elapsed}/{heat_wave_total})"
+            event_text = (
+                f"{EMOJI_HEAT_WAVE} Heat Wave (Day {days_elapsed}/{heat_wave_total})"
+            )
             if heat_wave_days == 1:
                 event_text += " (Final Day)"
             parts.append(event_text)
@@ -162,18 +281,33 @@ class StageDisplayManager:
         return "\n".join(parts)
 
     @staticmethod
-    def _format_condensed_wind(wind_timeline) -> str:
+    def _format_condensed_wind(wind_timeline: list) -> str:
         """
-        Format wind conditions into a very condensed format for stage view.
+        Format wind conditions into ultra-condensed format for stage view.
+
+        Shows unique wind conditions with arrows between changes. Deduplicates
+        identical conditions to show only pattern changes.
 
         Args:
             wind_timeline: List of wind data dicts with 'time', 'strength', 'direction' keys
 
         Returns:
-            str: Ultra-condensed wind summary (e.g., "Light Tailwind → Bracing Sidewind")
+            str: Ultra-condensed wind summary. Examples:
+                - "Calm" (all day calm)
+                - "Light North" (one condition all day)
+                - "Light Tailwind → Bracing Sidewind" (changing conditions)
+
+        Example:
+            >>> timeline = [
+            ...     {'strength': 'light', 'direction': 'north'},
+            ...     {'strength': 'bracing', 'direction': 'east'},
+            ...     {'strength': 'bracing', 'direction': 'east'}  # duplicate ignored
+            ... ]
+            >>> StageDisplayManager._format_condensed_wind(timeline)
+            'Light North → Bracing East'
         """
         if not wind_timeline:
-            return "Calm"
+            return MSG_CALM_WIND
 
         # Get unique wind conditions
         conditions = []
@@ -197,7 +331,7 @@ class StageDisplayManager:
                 seen.add(condition_key)
 
         if not conditions:
-            return "Calm"
+            return MSG_CALM_WIND
 
         if len(conditions) == 1:
             return conditions[0]
@@ -206,15 +340,32 @@ class StageDisplayManager:
 
     @staticmethod
     async def show_all_stages(
-        context, stages_data: Dict[int, List[Dict[str, Any]]], is_slash: bool = False
+        context: Union[discord.Interaction, commands.Context],
+        stages_data: Dict[int, List[Dict[str, Any]]],
+        is_slash: bool = False,
     ) -> None:
         """
-        Display an overview of all stages in the journey.
+        Display condensed overview of all journey stages.
+
+        Creates single embed showing all stages with condensed weather summaries.
+        Each stage shows duration and key weather patterns.
 
         Args:
-            context: Discord context
-            stages_data: Dictionary mapping stage numbers to lists of day data
-            is_slash: Whether this is a slash command response
+            context: Discord interaction or context to send response
+            stages_data: Dict mapping stage_number -> [days_data]. Each day has
+                weather_data dict with weather/wind/temperature info
+            is_slash: Whether this is a slash command response (default: False)
+
+        Returns:
+            None. Sends embed directly to context channel
+
+        Example:
+            >>> journey = {
+            ...     1: [day1_data, day2_data],
+            ...     2: [day3_data, day4_data, day5_data]
+            ... }
+            >>> await StageDisplayManager.show_all_stages(ctx, journey)
+            # Sends: "🗺️ Journey Overview" embed with 2 stage fields
         """
         embed = StageDisplayManager._create_all_stages_embed(stages_data)
         await StageDisplayManager._send_embed(context, embed, is_slash)
@@ -224,18 +375,31 @@ class StageDisplayManager:
         stages_data: Dict[int, List[Dict[str, Any]]],
     ) -> discord.Embed:
         """
-        Create an embed showing overview of all stages.
+        Create embed showing overview of all journey stages.
+
+        Displays total stages/days count with province/season context. Each
+        stage gets a condensed field showing duration and weather patterns.
 
         Args:
-            stages_data: Dictionary mapping stage numbers to day data lists
+            stages_data: Dict mapping stage_number -> [days_data]. Each day dict
+                contains weather_data with province/season/weather/temp info
 
         Returns:
-            discord.Embed: Overview embed
+            discord.Embed: Journey overview embed with stage summaries
+
+        Example:
+            >>> stages = {
+            ...     1: [day1, day2],
+            ...     2: [day3, day4, day5]
+            ... }
+            >>> embed = StageDisplayManager._create_all_stages_embed(stages)
+            >>> print(embed.title)
+            '🗺️ Journey Overview'
         """
         if not stages_data:
             return discord.Embed(
-                title="🗺️ Journey Overview",
-                description="No journey data available.",
+                title=f"{EMOJI_MAP} Journey Overview",
+                description=MSG_NO_JOURNEY_DATA,
                 color=StageDisplayManager.COLOR_STAGE,
             )
 
@@ -245,8 +409,8 @@ class StageDisplayManager:
         # Get province/season from first stage
         first_stage_data = stages_data[min(stages_data.keys())]
         if first_stage_data:
-            province = first_stage_data[0].get("province", "Unknown")
-            season = first_stage_data[0].get("season", "spring")
+            province = first_stage_data[0].get("province", DEFAULT_PROVINCE)
+            season = first_stage_data[0].get("season", DEFAULT_SEASON)
             province_name = WeatherFormatters.format_province_name(province)
             season_name = WeatherFormatters.format_season_name(season)
             description = f"**{province_name}** | **{season_name}**\n{total_stages} stages | {total_days} days total"
@@ -254,7 +418,7 @@ class StageDisplayManager:
             description = f"{total_stages} stages | {total_days} days total"
 
         embed = discord.Embed(
-            title="🗺️ Journey Overview",
+            title=f"{EMOJI_MAP} Journey Overview",
             description=description,
             color=StageDisplayManager.COLOR_STAGE,
             timestamp=datetime.now(timezone.utc),
@@ -266,35 +430,49 @@ class StageDisplayManager:
             stage_summary = StageDisplayManager._format_stage_overview(stage_days)
 
             embed.add_field(
-                name=f"🚢 Stage {stage_num}", value=stage_summary, inline=True
+                name=f"{EMOJI_SHIP} Stage {stage_num}", value=stage_summary, inline=True
             )
 
-        embed.set_footer(
-            text="Use /weather stage [number] to see details for a specific stage"
-        )
+        embed.set_footer(text=FOOTER_VIEW_STAGE)
 
         return embed
 
     @staticmethod
     def _format_stage_overview(stage_days: List[Dict[str, Any]]) -> str:
         """
-        Format a very brief overview of a stage.
+        Format very brief overview of a stage for journey summary.
+
+        Shows duration, most common weather, and temperature range in compact
+        3-line format. Designed for the all-stages overview display.
 
         Args:
-            stage_days: List of day data for this stage
+            stage_days: List of day data dicts for this stage. Each day has
+                weather_type, temperature, and other weather data
 
         Returns:
-            str: Brief stage summary
+            str: Brief 3-line stage summary. Format:
+                - Line 1: "X day(s)"
+                - Line 2: "emoji Weather Type"
+                - Line 3: "🌡️ temp-range°C"
+
+        Example:
+            >>> days = [
+            ...     {"weather_type": "rain", "temperature": 12},
+            ...     {"weather_type": "rain", "temperature": 14},
+            ...     {"weather_type": "fair", "temperature": 16}
+            ... ]
+            >>> StageDisplayManager._format_stage_overview(days)
+            '3 days\\n🌧️ Rain\\n🌡️ 12-16°C'
         """
         if not stage_days:
-            return "No data"
+            return MSG_NO_DATA
 
         num_days = len(stage_days)
 
         # Count weather types
         weather_counts = {}
         for day in stage_days:
-            weather = day.get("weather_type", "fair")
+            weather = day.get("weather_type", DEFAULT_WEATHER)
             weather_counts[weather] = weather_counts.get(weather, 0) + 1
 
         # Get most common weather
@@ -302,7 +480,7 @@ class StageDisplayManager:
         weather_emoji = WeatherFormatters.get_weather_emoji(most_common[0])
 
         # Get temperature range
-        temps = [day.get("temperature", 15) for day in stage_days]
+        temps = [day.get("temperature", DEFAULT_TEMPERATURE) for day in stage_days]
         min_temp = min(temps)
         max_temp = max(temps)
 
@@ -311,19 +489,36 @@ class StageDisplayManager:
         else:
             temp_str = f"{min_temp}-{max_temp}°C"
 
-        return f"{num_days} day{'s' if num_days != 1 else ''}\n{weather_emoji} {most_common[0].replace('_', ' ').title()}\n🌡️ {temp_str}"
+        return f"{num_days} day{'s' if num_days != 1 else ''}\n{weather_emoji} {most_common[0].replace('_', ' ').title()}\n{EMOJI_TEMPERATURE} {temp_str}"
 
     @staticmethod
     async def _send_embed(
-        context, embed: discord.Embed, is_slash: bool = False
+        context: Union[discord.Interaction, commands.Context],
+        embed: discord.Embed,
+        is_slash: bool = False,
     ) -> None:
         """
-        Send an embed to Discord, handling both slash and prefix commands.
+        Send embed to Discord, handling both slash and prefix commands.
+
+        Automatically detects interaction vs context and uses appropriate
+        response method. For interactions, uses response or followup based
+        on whether initial response was already sent.
 
         Args:
-            context: Discord context (ctx or interaction)
+            context: Discord interaction or context to send response
             embed: The embed to send
-            is_slash: Whether this is a slash command
+            is_slash: Whether this is a slash command (default: False).
+                Auto-detected from context type if incorrect
+
+        Returns:
+            None. Sends embed directly to Discord channel
+
+        Example:
+            >>> embed = discord.Embed(title="Test")
+            >>> await StageDisplayManager._send_embed(ctx, embed)
+            # Sends embed using ctx.send()
+            >>> await StageDisplayManager._send_embed(interaction, embed, is_slash=True)
+            # Sends embed using interaction.response or followup
         """
         # Auto-detect if is_slash parameter is incorrect by checking context type
         if hasattr(context, "response"):

@@ -5,26 +5,122 @@ This module handles GM channel notifications for weather-related events.
 Sends concise, mechanics-focused notifications to the GM channel without
 the narrative embellishments shown to players.
 
+Key Responsibilities:
+    - Send weather mechanics notifications to GM channels
+    - Format boat handling modifiers and penalties
+    - Notify about stage progression and journey events
+    - Provide quick reference information for GMs
+    - Handle special weather events (cold fronts, heat waves)
+
 Design Principles:
-- GM-focused: Clear, mechanics-only information
-- Non-intrusive: Simple text messages, not embeds
-- Informative: All relevant mechanical details at a glance
+    - GM-focused: Clear, mechanics-only information
+    - Non-intrusive: Embeds for weather, simple text for other events
+    - Informative: All relevant mechanical details at a glance
+    - Error-resilient: Gracefully handles missing channels and permissions
+
+Notification Types:
+    - Weather notifications: Detailed embeds with modifiers and effects
+    - Stage notifications: Simple text messages for stage completion
+    - Journey notifications: Start/end/advance announcements
+
+Usage Example:
+    >>> await NotificationManager.send_weather_notification(guild, "gm-channel", weather_data)
+    >>> await NotificationManager.send_journey_notification(guild, "gm-channel", "start", season="winter", province="reikland")
 """
 
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+
 import discord
 
 from .formatters import WeatherFormatters
 
+# Embed colors
+COLOR_NOTIFICATION = discord.Color.gold()
+
+# Notification titles
+TITLE_WEATHER_MECHANICS = "⚠️ Active Weather Mechanics"
+TITLE_BOAT_HANDLING = "🚢 Boat Handling Modifiers"
+TITLE_ACTIVE_PENALTIES = "🎯 Active Penalties & Conditions"
+TITLE_TEMPERATURE = "🌡️ Temperature"
+TITLE_SPECIAL_EVENTS = "🌨️ Special Weather Events"
+TITLE_SPECIAL_EVENTS_HEAT = "☀️ Special Weather Events"
+TITLE_NOTES = "💡 Notes"
+
+# Notification messages
+MSG_WIND_CHANGE_NOTE = (
+    "• Wind may change at midday, dusk, or midnight (10% chance each check)"
+)
+MSG_CALM_CONDITIONS = "Calm conditions: -10 penalty, 25% speed"
+MSG_CALM_ALL_DAY = "Calm all day (+0)"
+MSG_NO_HAZARDS = "No weather-related hazards"
+
+# Journey notification messages
+MSG_JOURNEY_START = "**🗺️ Journey Started**\nLocation: {province}\nSeason: {season}"
+MSG_JOURNEY_END = "**🏁 Journey Ended**\nTotal Duration: {duration} day{plural}"
+MSG_JOURNEY_ADVANCE = "**📅 Advanced to Day {day}**"
+MSG_STAGE_COMPLETE = (
+    "**🚢 Stage {current}/{total} Complete**\nDuration: {duration} day{plural}"
+)
+
+# Special event messages
+MSG_COLD_FRONT = "❄️ **Cold Front: Day {elapsed} of {total}**"
+MSG_COLD_FRONT_MODIFIER = "• Temperature modifier: -10°C"
+MSG_COLD_FRONT_FIRST_DAY = "• Sky filled with flocks of emigrating birds"
+MSG_COLD_FRONT_FINAL = "• **(Final Day)**"
+
+MSG_HEAT_WAVE = "🔥 **Heat Wave: Day {elapsed} of {total}**"
+MSG_HEAT_WAVE_MODIFIER = "• Temperature modifier: +10°C"
+MSG_HEAT_WAVE_FINAL = "• **(Final Day)**"
+
+# Default values
+DEFAULT_PROVINCE = "Unknown"
+DEFAULT_SEASON = "spring"
+DEFAULT_WEATHER = "fair"
+DEFAULT_TEMPERATURE = 15
+DEFAULT_DAY = 1
+
+# Emoji
+EMOJI_CALENDAR = "📅"
+EMOJI_MAP = "🗺️"
+EMOJI_FINISH = "🏁"
+EMOJI_SHIP = "🚢"
+
 
 class NotificationManager:
     """
-    Manages GM channel notifications for weather events.
+    Manages GM channel notifications for weather and journey events.
 
-    This class is responsible for:
-    - Sending weather notifications to GM channel
-    - Formatting notifications with key mechanical data
-    - Providing quick reference for GMs during sessions
+    This class provides static methods for sending various types of notifications
+    to GM channels. All notifications are mechanics-focused to provide GMs with
+    quick reference information during gameplay sessions.
+
+    Responsibilities:
+        - Send detailed weather mechanics embeds to GM channels
+        - Format boat handling modifiers and movement penalties
+        - Notify about stage progression and completion
+        - Announce journey start, end, and day advancement
+        - Display special weather events (cold fronts, heat waves)
+        - Handle Discord API errors gracefully
+
+    Design Pattern:
+        All methods are static as this class maintains no state. It serves
+        purely as a utility namespace for notification operations.
+
+    Error Handling:
+        - Returns False if channel not found
+        - Returns False on Discord permission errors
+        - Returns False on Discord API errors
+        - Never raises exceptions to calling code
+
+    Example:
+        >>> # Send weather notification
+        >>> success = await NotificationManager.send_weather_notification(
+        ...     guild, "gm-channel", weather_data
+        ... )
+        >>> # Send journey start notification
+        >>> await NotificationManager.send_journey_notification(
+        ...     guild, "gm-channel", "start", season="winter", province="reikland"
+        ... )
     """
 
     @staticmethod
@@ -32,24 +128,44 @@ class NotificationManager:
         guild: discord.Guild, channel_name: str, weather_data: Dict[str, Any]
     ) -> bool:
         """
-        Send a weather notification to the specified GM channel.
+        Send a weather notification embed to the specified GM channel.
+
+        Creates a detailed mechanics-focused embed with boat handling modifiers,
+        active penalties, temperature effects, and special events. The embed
+        provides GMs with all mechanical information needed for the current day.
 
         Args:
-            guild: Discord guild object
-            channel_name: Name of the channel to send notification to
-            weather_data: Dictionary containing weather information with keys:
+            guild: Discord guild object to search for channels
+            channel_name: Name of the GM channel (e.g., "boat-travelling-notifications")
+            weather_data: Dictionary containing comprehensive weather information with keys:
                 - day: Current day number
-                - province: Province name
-                - season: Season name
-                - weather_type: Type of weather
+                - province: Province name (e.g., "reikland")
+                - season: Season name (e.g., "winter")
+                - weather_type: Type of weather (e.g., "rain", "snow")
                 - actual_temp: Actual temperature value
-                - perceived_temp: Perceived temperature with wind chill
-                - temp_category: Temperature category
-                - wind_timeline: List with wind conditions
-                - weather_effects: List of weather effect strings
+                - perceived_temp: Temperature after wind chill
+                - temp_category: Temperature category for the season
+                - wind_timeline: List of wind conditions by time period
+                - weather_effects: List of active effect strings
+                - cold_front_days_remaining: Days left in cold front (optional)
+                - heat_wave_days_remaining: Days left in heat wave (optional)
 
         Returns:
-            bool: True if notification was sent successfully, False otherwise
+            bool: True if notification sent successfully, False otherwise
+                  (channel not found, permission denied, or API error)
+
+        Example:
+            >>> weather_data = {
+            ...     "day": 5,
+            ...     "province": "reikland",
+            ...     "season": "winter",
+            ...     "weather_type": "snow",
+            ...     "actual_temp": -2,
+            ...     "wind_timeline": [...]
+            ... }
+            >>> success = await NotificationManager.send_weather_notification(
+            ...     guild, "gm-channel", weather_data
+            ... )
         """
         # Find the channel
         channel = discord.utils.get(guild.text_channels, name=channel_name)
@@ -74,19 +190,27 @@ class NotificationManager:
         """
         Create a detailed GM notification embed with full mechanics.
 
+        Builds a comprehensive embed showing all mechanical information GMs
+        need for the current day including boat handling modifiers, active
+        penalties, temperature effects, and special events.
+
         Args:
-            weather_data: Dictionary containing weather information
+            weather_data: Dictionary containing complete weather information
+                (see send_weather_notification for full structure)
 
         Returns:
-            discord.Embed: Formatted embed for GM channel
+            discord.Embed: Formatted embed ready to send to GM channel
+
+        Note:
+            This method imports WIND_MODIFIERS locally to avoid circular imports.
         """
         from db.weather_data import WIND_MODIFIERS
 
-        day = weather_data.get("day", 1)
-        province = weather_data.get("province", "Unknown")
-        season = weather_data.get("season", "spring")
-        weather_type = weather_data.get("weather_type", "fair")
-        actual_temp = weather_data.get("actual_temp", 15)
+        day = weather_data.get("day", DEFAULT_DAY)
+        province = weather_data.get("province", DEFAULT_PROVINCE)
+        season = weather_data.get("season", DEFAULT_SEASON)
+        weather_type = weather_data.get("weather_type", DEFAULT_WEATHER)
+        actual_temp = weather_data.get("actual_temp", DEFAULT_TEMPERATURE)
         perceived_temp = weather_data.get("perceived_temp", actual_temp)
         temp_category = weather_data.get("temp_category", "")
         wind_timeline = weather_data.get("wind_timeline", [])
@@ -99,9 +223,9 @@ class NotificationManager:
 
         # Create embed
         embed = discord.Embed(
-            title="⚠️ Active Weather Mechanics",
+            title=TITLE_WEATHER_MECHANICS,
             description=f"Weather conditions for {season_name} in {province_name}",
-            color=discord.Color.gold(),
+            color=COLOR_NOTIFICATION,
         )
 
         # Boat Handling Modifiers section
@@ -110,16 +234,16 @@ class NotificationManager:
                 wind_timeline
             )
             embed.add_field(
-                name="🚢 Boat Handling Modifiers",
+                name=TITLE_BOAT_HANDLING,
                 value=boat_handling_text,
                 inline=False,
             )
 
         # Active Penalties & Conditions
-        if weather_effects and weather_effects[0] != "No weather-related hazards":
+        if weather_effects and weather_effects[0] != MSG_NO_HAZARDS:
             effects_text = "\n".join(f"• {effect}" for effect in weather_effects)
             embed.add_field(
-                name="🎯 Active Penalties & Conditions",
+                name=TITLE_ACTIVE_PENALTIES,
                 value=effects_text,
                 inline=False,
             )
@@ -135,7 +259,7 @@ class NotificationManager:
         else:
             temp_text = f"{actual_temp}°C"
 
-        embed.add_field(name="🌡️ Temperature", value=temp_text, inline=False)
+        embed.add_field(name=TITLE_TEMPERATURE, value=temp_text, inline=False)
 
         # Special Events section
         cold_front_days = weather_data.get("cold_front_days_remaining", 0)
@@ -145,59 +269,80 @@ class NotificationManager:
 
         if cold_front_days > 0 and cold_front_total > 0:
             days_elapsed = cold_front_total - cold_front_days + 1
-            event_text = f"❄️ **Cold Front: Day {days_elapsed} of {cold_front_total}**\n"
-            event_text += f"• Temperature modifier: -10°C\n"
+            event_text = (
+                MSG_COLD_FRONT.format(elapsed=days_elapsed, total=cold_front_total)
+                + "\n"
+            )
+            event_text += MSG_COLD_FRONT_MODIFIER + "\n"
 
             if days_elapsed == 1:
-                event_text += "• Sky filled with flocks of emigrating birds\n"
+                event_text += MSG_COLD_FRONT_FIRST_DAY + "\n"
 
             if cold_front_days == 1:
-                event_text += "• **(Final Day)**"
+                event_text += MSG_COLD_FRONT_FINAL
 
             embed.add_field(
-                name="🌨️ Special Weather Events",
+                name=TITLE_SPECIAL_EVENTS,
                 value=event_text.strip(),
                 inline=False,
             )
 
         if heat_wave_days > 0 and heat_wave_total > 0:
             days_elapsed = heat_wave_total - heat_wave_days + 1
-            event_text = f"🔥 **Heat Wave: Day {days_elapsed} of {heat_wave_total}**\n"
-            event_text += f"• Temperature modifier: +10°C\n"
+            event_text = (
+                MSG_HEAT_WAVE.format(elapsed=days_elapsed, total=heat_wave_total) + "\n"
+            )
+            event_text += MSG_HEAT_WAVE_MODIFIER + "\n"
 
             if heat_wave_days == 1:
-                event_text += "• **(Final Day)**"
+                event_text += MSG_HEAT_WAVE_FINAL
 
             embed.add_field(
-                name="☀️ Special Weather Events",
+                name=TITLE_SPECIAL_EVENTS_HEAT,
                 value=event_text.strip(),
                 inline=False,
             )
 
         # Notes section
         embed.add_field(
-            name="💡 Notes",
-            value="• Wind may change at midday, dusk, or midnight (10% chance each check)",
+            name=TITLE_NOTES,
+            value=MSG_WIND_CHANGE_NOTE,
             inline=False,
         )
 
         return embed
 
     @staticmethod
-    def _format_boat_handling_modifiers(wind_timeline) -> str:
+    def _format_boat_handling_modifiers(wind_timeline: list) -> str:
         """
         Format detailed boat handling modifiers for GM notification.
 
+        Creates a detailed breakdown of boat handling modifiers for each time
+        period of the day. Includes movement speed penalties/bonuses and
+        any special notes from the WIND_MODIFIERS table.
+
         Args:
-            wind_timeline: List of wind conditions for each time period
+            wind_timeline: List of wind condition dictionaries for each time period.
+                Each dict contains 'time', 'strength', and 'direction' keys.
 
         Returns:
-            str: Formatted boat handling modifiers with all details
+            str: Multi-line formatted string showing modifiers for each time period
+
+        Example:
+            >>> timeline = [
+            ...     {'time': 'dawn', 'strength': 'light', 'direction': 'north'},
+            ...     {'time': 'midday', 'strength': 'bracing', 'direction': 'northeast'}
+            ... ]
+            >>> NotificationManager._format_boat_handling_modifiers(timeline)
+            '**Dawn:** Light North\\n  └─ **Movement Speed:** +10%...'
+
+        Note:
+            Imports WIND_MODIFIERS locally to avoid circular imports.
         """
         from db.weather_data import WIND_MODIFIERS
 
         if not wind_timeline:
-            return "Calm conditions: -10 penalty, 25% speed"
+            return MSG_CALM_CONDITIONS
 
         lines = []
         for wind_data in wind_timeline:
@@ -327,7 +472,7 @@ class NotificationManager:
                 seen.add(condition_key)
 
         if not conditions:
-            return "Calm all day (+0)"
+            return MSG_CALM_ALL_DAY
 
         # Join with arrow if multiple conditions
         if len(conditions) == 1:
@@ -346,24 +491,37 @@ class NotificationManager:
         """
         Send a stage advancement notification to the GM channel.
 
+        Sends a simple text message announcing the completion of a stage
+        and the duration covered. Used for multi-day stage progression.
+
         Args:
-            guild: Discord guild object
-            channel_name: Name of the channel to send notification to
-            stage_number: Current stage number
-            total_stages: Total number of stages in journey
+            guild: Discord guild object to search for channels
+            channel_name: Name of the GM channel (e.g., "boat-travelling-notifications")
+            stage_number: Current completed stage number (1-based)
+            total_stages: Total number of stages in the journey
             stage_duration: Duration of this stage in days
 
         Returns:
-            bool: True if notification was sent successfully, False otherwise
+            bool: True if notification sent successfully, False otherwise
+                  (channel not found, permission denied, or API error)
+
+        Example:
+            >>> await NotificationManager.send_stage_notification(
+            ...     guild, "gm-channel", 2, 5, 3
+            ... )
+            # Sends: "🚢 Stage 2/5 Complete\nDuration: 3 days"
         """
         # Find the channel
         channel = discord.utils.get(guild.text_channels, name=channel_name)
         if not channel:
             return False
 
-        message = (
-            f"**🚢 Stage {stage_number}/{total_stages} Complete**\n"
-            f"Duration: {stage_duration} day{'s' if stage_duration != 1 else ''}"
+        plural = "s" if stage_duration != 1 else ""
+        message = MSG_STAGE_COMPLETE.format(
+            current=stage_number,
+            total=total_stages,
+            duration=stage_duration,
+            plural=plural,
         )
 
         try:
@@ -379,14 +537,39 @@ class NotificationManager:
         """
         Send a journey-related notification to the GM channel.
 
+        Sends simple text messages announcing journey lifecycle events like
+        start, end, or day advancement. The message format depends on the
+        notification type.
+
         Args:
-            guild: Discord guild object
-            channel_name: Name of the channel to send notification to
-            notification_type: Type of notification ('start', 'end', 'advance')
-            **kwargs: Additional data depending on notification type
+            guild: Discord guild object to search for channels
+            channel_name: Name of the GM channel (e.g., "boat-travelling-notifications")
+            notification_type: Type of notification. Valid values:
+                - "start": Journey started (requires season, province kwargs)
+                - "end": Journey ended (requires final_day kwarg)
+                - "advance": Advanced to new day (requires new_day kwarg)
+            **kwargs: Additional data depending on notification type:
+                For "start": season (str), province (str)
+                For "end": final_day (int)
+                For "advance": new_day (int)
 
         Returns:
-            bool: True if notification was sent successfully, False otherwise
+            bool: True if notification sent successfully, False if:
+                - Channel not found
+                - Unknown notification_type
+                - Permission denied
+                - Discord API error
+
+        Example:
+            >>> # Journey start
+            >>> await NotificationManager.send_journey_notification(
+            ...     guild, "gm-channel", "start",
+            ...     season="winter", province="reikland"
+            ... )
+            >>> # Journey end
+            >>> await NotificationManager.send_journey_notification(
+            ...     guild, "gm-channel", "end", final_day=15
+            ... )
         """
         # Find the channel
         channel = discord.utils.get(guild.text_channels, name=channel_name)
@@ -395,24 +578,20 @@ class NotificationManager:
 
         # Format message based on type
         if notification_type == "start":
-            province = kwargs.get("province", "Unknown")
-            season = kwargs.get("season", "spring")
+            province = kwargs.get("province", DEFAULT_PROVINCE)
+            season = kwargs.get("season", DEFAULT_SEASON)
             province_name = WeatherFormatters.format_province_name(province)
             season_name = WeatherFormatters.format_season_name(season)
-            message = (
-                f"**🗺️ Journey Started**\n"
-                f"Location: {province_name}\n"
-                f"Season: {season_name}"
+            message = MSG_JOURNEY_START.format(
+                province=province_name, season=season_name
             )
         elif notification_type == "end":
             final_day = kwargs.get("final_day", 0)
-            message = (
-                f"**🏁 Journey Ended**\n"
-                f"Total Duration: {final_day} day{'s' if final_day != 1 else ''}"
-            )
+            plural = "s" if final_day != 1 else ""
+            message = MSG_JOURNEY_END.format(duration=final_day, plural=plural)
         elif notification_type == "advance":
             new_day = kwargs.get("new_day", 1)
-            message = f"**📅 Advanced to Day {new_day}**"
+            message = MSG_JOURNEY_ADVANCE.format(day=new_day)
         else:
             return False
 

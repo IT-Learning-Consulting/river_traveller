@@ -13,7 +13,6 @@ omit =
     context/*
     archives/*
     # Exclude Discord command infrastructure
-    commands/*
     main.py
 
 [report]

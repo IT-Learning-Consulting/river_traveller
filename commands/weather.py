@@ -1,11 +1,53 @@
 """
-Command: weather
-Description: Generate daily weather conditions for WFRP river travel with multi-day journey tracking
+Weather Command Interface
 
-This module provides the command interface for the refactored weather system.
-It delegates all business logic to WeatherCommandHandler.
+Provides Discord command interface for the WFRP weather system with multi-day
+journey tracking. Delegates all business logic to WeatherCommandHandler for
+separation of concerns.
+
+Features:
+    - Multi-day journey tracking with persistent state
+    - Day-by-day or stage-based weather generation
+    - Historical weather viewing
+    - GM-only configuration and override commands
+    - Season and province-specific weather patterns
+
+Usage Examples:
+    Slash Commands:
+        /weather action:next                              # Generate next day
+        /weather action:next-stage                        # Generate multi-day stage
+        /weather action:journey season:summer province:reikland  # Start journey
+        /weather action:view day:3                        # View historical weather
+        /weather action:end                               # End current journey
+        /weather-stage-config stage_duration:5            # GM: Set stage length
+        /weather-stage-config display_mode:detailed       # GM: Set display mode
+
+    Prefix Commands:
+        !weather next
+        !weather journey summer reikland
+        !weather view 3
+        !weather end
+
+Permissions:
+    - All users can generate weather and view journey state
+    - GM role or server owner can:
+        - Override weather
+        - Configure stage settings (duration, display mode)
+
+Channel Requirements:
+    - boat-travelling-notifications: GM weather details (optional)
+    - boat-travelling-log: Command logging (optional)
+
+State Management:
+    Weather state persists per-guild and includes:
+    - Current day number
+    - Season and province
+    - Historical weather data
+    - Stage configuration (duration, display mode)
+    - Event cooldown tracking (cold fronts, heat waves)
 """
 
+from typing import Optional, Union
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -13,32 +55,53 @@ from discord.ext import commands
 from commands.weather_modules.handler import WeatherCommandHandler
 
 
+# Constants
+ROLE_GM = "GM"
+
+
 def is_gm(user: discord.Member) -> bool:
     """
-    Check if user is a GM (server owner or has GM role).
+    Check if user has GM permissions (server owner or GM role).
+
+    Used to control access to weather override and configuration commands.
+    Prevents non-GMs from bypassing weather mechanics or altering journey state.
 
     Args:
-        user: Discord member to check
+        user: Discord member to check for GM permissions
 
     Returns:
-        True if user is GM, False otherwise
+        True if user is server owner or has GM role, False otherwise
+
+    Example:
+        >>> if is_gm(member):
+        ...     # Allow configuration changes
+        ...     pass
     """
     # Server owner is always GM
     if user.guild.owner_id == user.id:
         return True
 
     # Check for GM role
-    gm_role = discord.utils.get(user.guild.roles, name="GM")
+    gm_role = discord.utils.get(user.guild.roles, name=ROLE_GM)
     if gm_role and gm_role in user.roles:
         return True
 
     return False
 
 
-def setup(bot: commands.Bot):
+def setup(bot: commands.Bot) -> None:
     """
     Register weather commands with the bot.
-    Called from main.py during bot initialization.
+
+    Registers both slash (/) and prefix (!) versions of weather commands,
+    including the main weather command and stage configuration command.
+    Initializes a shared WeatherCommandHandler instance for all commands.
+
+    Args:
+        bot: The Discord bot instance to register commands with
+
+    Note:
+        Called automatically from main.py during bot initialization.
     """
 
     # Initialize handler once
@@ -92,11 +155,23 @@ def setup(bot: commands.Bot):
     async def weather_slash(
         interaction: discord.Interaction,
         action: str = "next",
-        season: str = None,
-        province: str = None,
-        day: int = None,
-    ):
-        """Manage weather for multi-day journeys."""
+        season: Optional[str] = None,
+        province: Optional[str] = None,
+        day: Optional[int] = None,
+    ) -> None:
+        """
+        Slash command for weather management.
+
+        Handles weather generation, journey management, and historical viewing.
+        GM-only actions (override) are gated by permission checks.
+
+        Args:
+            interaction: Discord interaction from slash command
+            action: Action to perform (next, next-stage, journey, view, end, override)
+            season: Season for journey/override (spring, summer, autumn, winter)
+            province: Province for journey/override
+            day: Day number for view action
+        """
         # Check GM permissions for override action
         if action == "override":
             if not is_gm(interaction.user):
@@ -112,13 +187,28 @@ def setup(bot: commands.Bot):
     # Prefix command
     @bot.command(name="weather")
     async def weather_prefix(
-        ctx,
+        ctx: commands.Context,
         action: str = "next",
-        season: str = None,
-        province: str = None,
-        day: int = None,
-    ):
-        """Manage weather for multi-day journeys."""
+        season: Optional[str] = None,
+        province: Optional[str] = None,
+        day: Optional[int] = None,
+    ) -> None:
+        """
+        Prefix command for weather management.
+
+        Usage:
+            !weather next
+            !weather journey summer reikland
+            !weather view 3
+            !weather end
+
+        Args:
+            ctx: Command context
+            action: Action to perform
+            season: Season for journey/override
+            province: Province for journey/override
+            day: Day number for view action
+        """
         # Check GM permissions for override action
         if action == "override":
             if not is_gm(ctx.author):
@@ -145,10 +235,21 @@ def setup(bot: commands.Bot):
     )
     async def weather_stage_config_slash(
         interaction: discord.Interaction,
-        stage_duration: int = None,
-        display_mode: str = None,
-    ):
-        """Configure stage duration and display mode (GM only)."""
+        stage_duration: Optional[int] = None,
+        display_mode: Optional[str] = None,
+    ) -> None:
+        """
+        Configure stage duration and display mode (GM only).
+
+        Allows GMs to customize how multi-day stages are generated and displayed.
+        Stage duration controls how many days are generated per "next-stage" command.
+        Display mode controls whether full details or summary are shown.
+
+        Args:
+            interaction: Discord interaction from slash command
+            stage_duration: Number of days per stage (1-10)
+            display_mode: Display format ("simple" or "detailed")
+        """
         # Check GM permissions
         if not is_gm(interaction.user):
             await interaction.response.send_message(
@@ -156,18 +257,39 @@ def setup(bot: commands.Bot):
             )
             return
 
-        await handler.configure_stage(
-            interaction, stage_duration, display_mode, is_slash=True
-        )
+        try:
+            await handler.configure_stage(
+                interaction, stage_duration, display_mode, is_slash=True
+            )
+        except ValueError as e:
+            # Validation error - inform user
+            await interaction.followup.send(f"❌ {str(e)}", ephemeral=True)
+        except Exception as e:  # noqa: BLE001
+            # Generic error (broad exception intentional for user safety)
+            await interaction.followup.send(
+                f"❌ An error occurred: {str(e)}", ephemeral=True
+            )
 
     # Prefix command for stage configuration
     @bot.command(name="weather-stage-config")
     async def weather_stage_config_prefix(
-        ctx,
-        stage_duration: int = None,
-        display_mode: str = None,
-    ):
-        """Configure stage duration and display mode (GM only)."""
+        ctx: commands.Context,
+        stage_duration: Optional[int] = None,
+        display_mode: Optional[str] = None,
+    ) -> None:
+        """
+        Configure stage duration and display mode (GM only).
+
+        Usage:
+            !weather-stage-config 5
+            !weather-stage-config detailed
+            !weather-stage-config 5 detailed
+
+        Args:
+            ctx: Command context
+            stage_duration: Number of days per stage (1-10)
+            display_mode: Display format ("simple" or "detailed")
+        """
         # Check GM permissions
         if not is_gm(ctx.author):
             await ctx.send("❌ Only GMs can configure stage settings.")

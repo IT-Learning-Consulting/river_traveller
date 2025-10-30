@@ -1,8 +1,59 @@
 """
 Character data and lookup utilities for the WFRP traveling bot.
+
+Contains player character profiles with complete statistics, skills, and
+characteristics for the traveling party.
+
+Key Responsibilities:
+    - Store complete character data (characteristics, skills, status)
+    - Provide lookup functions for character retrieval
+    - Calculate derived values (boat handling skills, lore bonuses)
+    - Validate character existence and skill availability
+
+Data Structure:
+    Each character entry contains:
+    - name: Full character name
+    - species: Character race (Human, High Elf, etc.)
+    - status: WFRP social standing (Brass/Silver/Gold tier + number)
+    - characteristics: 10 core WFRP characteristics (WS, BS, S, T, I, AG, DEX, INT, WP, FEL)
+    - trading_skills: Skills used for commerce and social interaction
+    - river_travelling_skills: Skills used for river travel and navigation
+
+Skills of Note:
+    - Row: Basic boat handling (all characters have this)
+    - Sail: Advanced boat handling (preferred if available)
+    - Lore (Riverways): Provides bonus to boat handling tests
+    - Navigation, Perception, Outdoor Survival: Key travel skills
+
+Usage Example:
+    >>> char = get_character("anara")
+    >>> print(char['name'])
+    Anara of Sānxiá
+
+    >>> skill, value = get_boat_handling_skill(char)
+    >>> print(f"{skill}: {value}")
+    Row: 45
+
+    >>> bonus = get_lore_riverways_bonus(char)
+    >>> print(f"Lore bonus: +{bonus}")
+    Lore bonus: +0
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Tuple, List
+
+# Skill name constants
+SKILL_SAIL: str = "Sail"
+SKILL_ROW: str = "Row"
+SKILL_LORE_RIVERWAYS: str = "Lore (Riverways)"
+
+# Character data keys
+KEY_NAME: str = "name"
+KEY_RIVER_SKILLS: str = "river_travelling_skills"
+
+# Lore bonus calculation
+LORE_TENS_DIVISOR: int = 10
+MIN_LORE_VALUE: int = 0
+DEFAULT_BONUS: int = 0
 
 
 # Character database
@@ -175,16 +226,34 @@ characters_data = {
 
 def get_character(character_key: str) -> Dict[str, Any]:
     """
-    Get character data by key.
+    Get character data by key (case-insensitive).
+
+    Retrieves complete character profile including characteristics,
+    skills, and metadata.
 
     Args:
-        character_key: Character identifier (e.g., 'anara', 'emmerich')
+        character_key: Character identifier (case-insensitive).
+            Valid keys: 'anara', 'emmerich', 'hildric', 'oktavian', 'lupus'
 
     Returns:
-        Character data dictionary
+        Dict[str, Any]: Complete character data dictionary with keys:
+            - name (str): Full character name
+            - species (str): Character race
+            - status (str): Social standing
+            - characteristics (Dict): 10 core stats
+            - trading_skills (Dict): Commerce skills
+            - river_travelling_skills (Dict): Travel skills
 
     Raises:
-        ValueError: If character not found
+        ValueError: If character_key not found in database. Error message
+            includes list of available character keys
+
+    Example:
+        >>> char = get_character("ANARA")
+        >>> print(char['name'])
+        Anara of Sānxiá
+        >>> print(char['characteristics']['I'])
+        61
     """
     char_key = character_key.lower().strip()
     if char_key not in characters_data:
@@ -196,7 +265,18 @@ def get_character(character_key: str) -> Dict[str, Any]:
 
 
 def get_available_characters() -> list:
-    """Get list of available character keys."""
+    """
+    Get list of available character keys.
+
+    Returns:
+        list: Character identifier keys that can be used with get_character().
+            Example: ['anara', 'emmerich', 'hildric', 'oktavian', 'lupus']
+
+    Example:
+        >>> chars = get_available_characters()
+        >>> print(f"Available characters: {', '.join(chars)}")
+        Available characters: anara, emmerich, hildric, oktavian, lupus
+    """
     return list(characters_data.keys())
 
 
@@ -204,46 +284,80 @@ def get_boat_handling_skill(character: Dict[str, Any]) -> tuple[str, int]:
     """
     Determine which boat handling skill to use for a character.
 
-    Prefers Sail (advanced skill) if available, otherwise uses Row (basic skill).
+    WFRP boat handling uses either Row (basic) or Sail (advanced). This
+    function selects the appropriate skill, preferring Sail if available.
+
+    Priority:
+    1. Sail (advanced boat handling skill)
+    2. Row (basic boat handling skill)
 
     Args:
-        character: Character data dictionary
+        character: Complete character data dictionary from get_character()
 
     Returns:
-        Tuple of (skill_name, skill_value)
+        tuple[str, int]: (skill_name, skill_value)
+            - skill_name: Either "Sail" or "Row"
+            - skill_value: Character's skill percentage (e.g., 45)
 
     Raises:
         ValueError: If character has neither Row nor Sail skill
+
+    Example:
+        >>> char = get_character("emmerich")
+        >>> skill, value = get_boat_handling_skill(char)
+        >>> print(f"{skill}: {value}")
+        Sail: 30
+
+        >>> char = get_character("anara")
+        >>> skill, value = get_boat_handling_skill(char)
+        >>> print(f"{skill}: {value}")
+        Row: 45
     """
-    river_skills = character.get("river_travelling_skills", {})
-    sail_skill = river_skills.get("Sail")
-    row_skill = river_skills.get("Row")
+    river_skills = character.get(KEY_RIVER_SKILLS, {})
+    sail_skill = river_skills.get(SKILL_SAIL)
+    row_skill = river_skills.get(SKILL_ROW)
 
     if sail_skill:
-        return ("Sail", sail_skill)
+        return (SKILL_SAIL, sail_skill)
     elif row_skill:
-        return ("Row", row_skill)
+        return (SKILL_ROW, row_skill)
     else:
-        char_name = character.get("name", "Character")
+        char_name = character.get(KEY_NAME, "Character")
         raise ValueError(f"{char_name} has no Row or Sail skill!")
 
 
 def get_lore_riverways_bonus(character: Dict[str, Any]) -> int:
     """
-    Calculate Lore (Riverways) bonus for boat handling.
+    Calculate Lore (Riverways) bonus for boat handling tests.
 
-    The bonus is the first digit of the skill value.
+    WFRP specialty skill bonus: The tens digit of Lore (Riverways) provides
+    a bonus to related boat handling tests.
+
+    Calculation: bonus = skill_value // 10
+    - Lore (Riverways) 47 → bonus +4
+    - Lore (Riverways) 52 → bonus +5
+    - Lore (Riverways) None → bonus 0
 
     Args:
-        character: Character data dictionary
+        character: Complete character data dictionary from get_character()
 
     Returns:
-        Bonus value (0 if skill not present or None)
+        int: Bonus value (0 if skill not present or None or 0)
 
     Example:
-        Lore (Riverways) 47 -> bonus of +4
-        Lore (Riverways) None -> bonus of 0
+        >>> char = get_character("emmerich")
+        >>> # Emmerich has Lore (Riverways): None
+        >>> bonus = get_lore_riverways_bonus(char)
+        >>> print(bonus)
+        0
+
+        >>> # If a character had Lore (Riverways) 47:
+        >>> # bonus would be 47 // 10 = 4
     """
-    river_skills = character.get("river_travelling_skills", {})
-    lore_riverways = river_skills.get("Lore (Riverways)", 0)
-    return lore_riverways // 10 if (lore_riverways and lore_riverways > 0) else 0
+    river_skills = character.get(KEY_RIVER_SKILLS, {})
+    lore_riverways = river_skills.get(SKILL_LORE_RIVERWAYS, MIN_LORE_VALUE)
+    return (
+        lore_riverways // LORE_TENS_DIVISOR
+        if (lore_riverways and lore_riverways > MIN_LORE_VALUE)
+        else DEFAULT_BONUS
+    )
