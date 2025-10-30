@@ -40,7 +40,6 @@ from typing import Literal, Optional, Union
 from discord import app_commands
 from discord.ext import commands
 from utils.encounter_mechanics import (
-    generate_encounter,
     get_encounter_emoji,
     get_severity_color,
     format_encounter_type_name,
@@ -49,40 +48,23 @@ from utils.encounter_mechanics import (
     format_damage_result,
     format_mechanics_summary,
 )
+from commands.permissions import is_gm
+from commands.constants import CHANNEL_GM_NOTIFICATIONS
+from commands.error_handlers import handle_discord_error
+from commands.services.command_logger import CommandLogger
+from commands.services.encounter_service import EncounterService
 
-
-# Encounter type constants
-ENCOUNTER_TYPE_POSITIVE = "positive"
-ENCOUNTER_TYPE_COINCIDENTAL = "coincidental"
-ENCOUNTER_TYPE_UNEVENTFUL = "uneventful"
-ENCOUNTER_TYPE_HARMFUL = "harmful"
-ENCOUNTER_TYPE_ACCIDENT = "accident"
-
-VALID_ENCOUNTER_TYPES = [
-    ENCOUNTER_TYPE_POSITIVE,
-    ENCOUNTER_TYPE_COINCIDENTAL,
-    ENCOUNTER_TYPE_UNEVENTFUL,
-    ENCOUNTER_TYPE_HARMFUL,
-    ENCOUNTER_TYPE_ACCIDENT,
-]
 
 # Footer hints for each encounter type
 FOOTER_HINTS = {
-    ENCOUNTER_TYPE_POSITIVE: "Something stirs along the riverbank...",
-    ENCOUNTER_TYPE_COINCIDENTAL: "The river reveals its mysteries...",
-    ENCOUNTER_TYPE_UNEVENTFUL: "Another mile of murky water...",
-    ENCOUNTER_TYPE_HARMFUL: "The river demands its toll...",
-    ENCOUNTER_TYPE_ACCIDENT: "Something vital fails at the worst moment...",
+    "positive": "Something stirs along the riverbank...",
+    "coincidental": "The river reveals its mysteries...",
+    "uneventful": "Another mile of murky water...",
+    "harmful": "The river demands its toll...",
+    "accident": "Something vital fails at the worst moment...",
 }
 
 DEFAULT_FOOTER_HINT = "The journey continues..."
-
-# Channel names
-CHANNEL_GM_NOTIFICATIONS = "boat-travelling-notifications"
-CHANNEL_COMMAND_LOG = "boat-travelling-log"
-
-# Role name
-ROLE_GM = "GM"
 
 # Test emoji indicators
 EMOJI_TEST_PRIMARY = "1️⃣"
@@ -252,8 +234,8 @@ def format_gm_accident_embed(
         >>> "Broken Rudder" in embed.description
         True
     """
-    emoji = get_encounter_emoji(ENCOUNTER_TYPE_ACCIDENT)
-    color = get_severity_color(ENCOUNTER_TYPE_ACCIDENT)
+    emoji = get_encounter_emoji("accident")
+    color = get_severity_color("accident")
 
     # Build title
     title = f"{emoji} River Accident!"
@@ -443,7 +425,7 @@ async def send_gm_notification(
         return False
 
     # Format appropriate embed based on encounter type
-    if encounter_data["type"] == ENCOUNTER_TYPE_ACCIDENT:
+    if encounter_data["type"] == "accident":
         embed = format_gm_accident_embed(encounter_data, stage)
     else:
         embed = format_gm_simple_embed(encounter_data, stage)
@@ -458,38 +440,6 @@ async def send_gm_notification(
     except Exception:  # noqa: BLE001
         # Other error, silently fail (broad exception intentional for resilience)
         return False
-
-
-def is_gm(user: discord.Member) -> bool:
-    """
-    Check if user has GM permissions (server owner or GM role).
-
-    Used to determine if a user can override encounter types when generating
-    encounters. This prevents players from metagaming by forcing specific
-    encounter outcomes.
-
-    Args:
-        user: Discord member to check for GM permissions
-
-    Returns:
-        True if user is server owner or has GM role, False otherwise
-
-    Example:
-        >>> # Mock user with GM role
-        >>> if is_gm(member):
-        ...     # Allow encounter type override
-        ...     pass
-    """
-    # Server owner is always GM
-    if user.guild.owner_id == user.id:
-        return True
-
-    # Check for GM role
-    gm_role = discord.utils.get(user.guild.roles, name=ROLE_GM)
-    if gm_role and gm_role in user.roles:
-        return True
-
-    return False
 
 
 def setup_river_encounter(bot: commands.Bot):
@@ -510,11 +460,11 @@ def setup_river_encounter(bot: commands.Bot):
     )
     @app_commands.choices(
         encounter_type=[
-            app_commands.Choice(name="Positive", value=ENCOUNTER_TYPE_POSITIVE),
-            app_commands.Choice(name="Coincidental", value=ENCOUNTER_TYPE_COINCIDENTAL),
-            app_commands.Choice(name="Uneventful", value=ENCOUNTER_TYPE_UNEVENTFUL),
-            app_commands.Choice(name="Harmful", value=ENCOUNTER_TYPE_HARMFUL),
-            app_commands.Choice(name="Accident", value=ENCOUNTER_TYPE_ACCIDENT),
+            app_commands.Choice(name="Positive", value="positive"),
+            app_commands.Choice(name="Coincidental", value="coincidental"),
+            app_commands.Choice(name="Uneventful", value="uneventful"),
+            app_commands.Choice(name="Harmful", value="harmful"),
+            app_commands.Choice(name="Accident", value="accident"),
         ]
     )
     async def river_encounter_slash(
@@ -548,7 +498,8 @@ def setup_river_encounter(bot: commands.Bot):
                     return
 
             # Generate encounter (with optional type override)
-            encounter_data = generate_encounter(encounter_type=encounter_type)
+            service = EncounterService()
+            encounter_data = service.generate_encounter(encounter_type=encounter_type)
 
             # Format player flavor embed (cryptic)
             player_embed = format_player_flavor_embed(
@@ -562,13 +513,32 @@ def setup_river_encounter(bot: commands.Bot):
             if interaction.guild:
                 await send_gm_notification(interaction.guild, encounter_data, stage)
                 # Send command log
-                await _send_command_log(
-                    interaction,
-                    stage,
-                    encounter_type,
-                    encounter_data["type"],
-                    is_slash=True,
-                )
+                try:
+                    logger = CommandLogger()
+                    fields = {"Actual Type": encounter_data["type"].title()}
+                    if stage:
+                        fields["Stage"] = stage
+                    if encounter_type:
+                        fields["Override Type"] = encounter_type.title()
+
+                    # Build command string
+                    command_str = "/river-encounter"
+                    if stage:
+                        command_str += f" stage:{stage}"
+                    if encounter_type:
+                        command_str += f" encounter_type:{encounter_type}"
+
+                    await logger.log_command_from_context(
+                        context=interaction,
+                        command_name="river-encounter",
+                        command_string=command_str,
+                        fields=fields,
+                        color=discord.Color.teal(),
+                        is_slash=True,
+                    )
+                except (KeyError, AttributeError):
+                    # Silently fail logging if data is incomplete
+                    pass
 
         except (discord.Forbidden, discord.HTTPException):
             # Permission errors - encounter already sent, just log the issue
@@ -576,13 +546,7 @@ def setup_river_encounter(bot: commands.Bot):
 
         except Exception as e:  # noqa: BLE001
             # Generic exception - inform user (broad exception intentional for user safety)
-            try:
-                await interaction.followup.send(
-                    f"❌ An error occurred: {str(e)}", ephemeral=True
-                )
-            except Exception:  # noqa: BLE001, S110
-                # Even followup failed, give up silently (broad exception intentional)
-                pass
+            await handle_discord_error(interaction, e, is_slash=True)
 
     @bot.command(name="river-encounter")
     async def river_encounter_prefix(
@@ -610,7 +574,10 @@ def setup_river_encounter(bot: commands.Bot):
             !river-encounter accident Day 3
         """
         # Validate encounter type if provided
-        if encounter_type and encounter_type.lower() not in VALID_ENCOUNTER_TYPES:
+        service = EncounterService()
+        if encounter_type and not service.is_valid_encounter_type(
+            encounter_type.lower()
+        ):
             # If first arg isn't a valid type, treat it as part of the stage
             if stage:
                 stage = f"{encounter_type} {stage}"
@@ -628,7 +595,7 @@ def setup_river_encounter(bot: commands.Bot):
                 return
 
         # Generate encounter (with optional type override)
-        encounter_data = generate_encounter(encounter_type=encounter_type)
+        encounter_data = service.generate_encounter(encounter_type=encounter_type)
 
         # Format player flavor embed (cryptic)
         player_embed = format_player_flavor_embed(
@@ -642,89 +609,29 @@ def setup_river_encounter(bot: commands.Bot):
         if ctx.guild:
             await send_gm_notification(ctx.guild, encounter_data, stage)
             # Send command log
-            await _send_command_log(
-                ctx, stage, encounter_type, encounter_data["type"], is_slash=False
-            )
+            try:
+                logger = CommandLogger()
+                fields = {"Actual Type": encounter_data["type"].title()}
+                if stage:
+                    fields["Stage"] = stage
+                if encounter_type:
+                    fields["Override Type"] = encounter_type.title()
 
+                # Build command string
+                command_str = "!river-encounter"
+                if encounter_type:
+                    command_str += f" {encounter_type}"
+                if stage:
+                    command_str += f" {stage}"
 
-async def _send_command_log(
-    context: Union[discord.Interaction, commands.Context],
-    stage: Optional[str],
-    encounter_type_override: Optional[str],
-    actual_type: str,
-    is_slash: bool,
-) -> None:
-    """
-    Send command details to boat-travelling-log channel.
-
-    Logs all river encounter commands with user info, parameters, and
-    actual outcome. Helps GMs track command usage and debug issues.
-
-    Args:
-        context: Discord interaction or command context
-        stage: Optional stage/time identifier provided by user
-        encounter_type_override: Encounter type override (if GM forced specific type)
-        actual_type: Actual encounter type generated
-        is_slash: True if slash command, False if prefix command
-
-    Note:
-        Fails silently if log channel doesn't exist or bot lacks permissions.
-        Logging is optional and should not break the main command flow.
-
-    Example:
-        >>> # In async context
-        >>> await _send_command_log(ctx, "Day 2", "harmful", "harmful", False)
-    """
-    try:
-        # Find the log channel
-        log_channel = discord.utils.get(
-            context.guild.text_channels, name=CHANNEL_COMMAND_LOG
-        )
-        if not log_channel:
-            return  # Silently fail if log channel doesn't exist
-
-        # Get username
-        if is_slash:
-            username = context.user.display_name
-            user_id = context.user.id
-        else:
-            username = context.author.display_name
-            user_id = context.author.id
-
-        # Build command string
-        if is_slash:
-            command_str = "/river-encounter"
-            if stage:
-                command_str += f" stage:{stage}"
-            if encounter_type_override:
-                command_str += f" encounter_type:{encounter_type_override}"
-        else:
-            command_str = "!river-encounter"
-            if encounter_type_override:
-                command_str += f" {encounter_type_override}"
-            if stage:
-                command_str += f" {stage}"
-
-        # Create log embed
-        log_embed = discord.Embed(
-            title="🌊 Command Log: River Encounter",
-            description=f"**User:** {username} (`{user_id}`)\n**Command:** `{command_str}`",
-            color=discord.Color.teal(),
-            timestamp=discord.utils.utcnow(),
-        )
-
-        if stage:
-            log_embed.add_field(name="Stage", value=stage, inline=True)
-
-        if encounter_type_override:
-            log_embed.add_field(
-                name="Override Type", value=encounter_type_override.title(), inline=True
-            )
-
-        log_embed.add_field(name="Actual Type", value=actual_type.title(), inline=True)
-
-        await log_channel.send(embed=log_embed)
-
-    except (discord.Forbidden, discord.HTTPException, AttributeError):
-        # Silently fail - logging is not critical
-        pass
+                await logger.log_command_from_context(
+                    context=ctx,
+                    command_name="river-encounter",
+                    command_string=command_str,
+                    fields=fields,
+                    color=discord.Color.teal(),
+                    is_slash=False,
+                )
+            except (KeyError, AttributeError):
+                # Silently fail logging if data is incomplete
+                pass

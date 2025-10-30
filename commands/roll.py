@@ -49,49 +49,14 @@ from discord import app_commands
 from discord.ext import commands
 
 # Import from our modules
-from utils.wfrp_mechanics import (
-    parse_dice_notation,
-    roll_dice,
-    check_wfrp_doubles,
+from commands.services.roll_service import RollService, RollResult
+from commands.services.command_logger import CommandLogger
+from commands.constants import (
+    DIFFICULTY_NAMES,
+    DEFAULT_DIFFICULTY,
+    MAX_DICE_DISPLAY,
 )
-
-
-# WFRP difficulty modifiers and names
-DIFFICULTY_VERY_EASY = 60
-DIFFICULTY_EASY = 40
-DIFFICULTY_AVERAGE = 20
-DIFFICULTY_CHALLENGING = 0
-DIFFICULTY_DIFFICULT = -10
-DIFFICULTY_HARD = -20
-DIFFICULTY_VERY_DIFFICULT = -30
-DIFFICULTY_FUTILE = -40
-DIFFICULTY_IMPOSSIBLE = -50
-
-DEFAULT_DIFFICULTY = DIFFICULTY_AVERAGE
-
-DIFFICULTY_NAMES = {
-    DIFFICULTY_IMPOSSIBLE: "Impossible",
-    DIFFICULTY_FUTILE: "Futile",
-    DIFFICULTY_VERY_DIFFICULT: "Very Difficult",
-    DIFFICULTY_HARD: "Hard",
-    DIFFICULTY_DIFFICULT: "Difficult",
-    DIFFICULTY_CHALLENGING: "Challenging",
-    DIFFICULTY_AVERAGE: "Average",
-    DIFFICULTY_EASY: "Easy",
-    DIFFICULTY_VERY_EASY: "Very Easy",
-}
-
-# WFRP constants
-WFRP_SKILL_MIN = 1
-WFRP_SKILL_MAX = 100
-WFRP_ROLL_FUMBLE = 100
-WFRP_ROLL_MIN_DOUBLE = 1  # 01 counts as doubles
-
-# Display thresholds
-MAX_DICE_DISPLAY = 20  # Show individual results only if ≤20 dice
-
-# Channel names
-CHANNEL_COMMAND_LOG = "boat-travelling-log"
+from commands.error_handlers import handle_discord_error, handle_value_error
 
 
 def setup(bot: commands.Bot) -> None:
@@ -171,9 +136,8 @@ def setup(bot: commands.Bot) -> None:
         """
         Shared logic for both slash and prefix roll commands.
 
-        Handles dice parsing, rolling, WFRP mechanics, embed generation,
-        and command logging. Implements defensive error handling for Discord
-        API failures.
+        Delegates business logic to RollService and handles Discord
+        interaction (embed creation and sending).
 
         Args:
             context: Discord interaction or command context
@@ -183,197 +147,31 @@ def setup(bot: commands.Bot) -> None:
             is_slash: True for slash commands, False for prefix commands
         """
         try:
-            # Parse the dice notation
-            num_dice, die_size, dice_modifier = parse_dice_notation(dice)
+            # Delegate to RollService for business logic
+            service = RollService()
 
-            # Roll the dice
-            results = roll_dice(num_dice, die_size)
-            total = sum(results) + dice_modifier
-
-            # Build the response embed
-            embed = discord.Embed(title="🎲 Dice Roll", color=discord.Color.blue())
-
-            # Add the roll details
-            notation_display = f"{num_dice}d{die_size}"
-            if dice_modifier != 0:
-                notation_display += f"{dice_modifier:+d}"
-
-            embed.add_field(name="Roll", value=f"`{notation_display}`", inline=False)
-
-            # Show individual results if reasonable
-            if num_dice <= MAX_DICE_DISPLAY:
-                results_str = ", ".join(str(r) for r in results)
-                embed.add_field(name="Results", value=f"[{results_str}]", inline=False)
+            if target is not None:
+                # WFRP skill test
+                result = service.roll_wfrp_test(dice, target, modifier)
             else:
-                embed.add_field(
-                    name="Results", value=f"*{num_dice} dice rolled*", inline=False
-                )
+                # Simple dice roll
+                result = service.roll_simple_dice(dice)
 
-            # Show dice modifier if present
-            if dice_modifier != 0:
-                modifier_str = f"{dice_modifier:+d}"
-                embed.add_field(name="Dice Modifier", value=modifier_str, inline=True)
+            # Build Discord embed from result
+            embed = _build_roll_embed(result, context, is_slash)
 
-            # Show total
-            embed.add_field(name="**Total**", value=f"**{total}**", inline=True)
-
-            # WFRP Special: Check for doubles on d100
-            if num_dice == 1 and die_size == 100 and target is not None:
-                # Apply WFRP difficulty modifier to target
-                final_target = target + modifier
-
-                # Clamp to valid range
-                final_target = max(WFRP_SKILL_MIN, min(WFRP_SKILL_MAX, final_target))
-
-                # Show WFRP info
-                difficulty_name = DIFFICULTY_NAMES.get(modifier, f"{modifier:+d}")
-
-                embed.add_field(
-                    name="WFRP Target",
-                    value=f"Skill: {target} | Difficulty: {difficulty_name} ({modifier:+d})\n**Final Target: {final_target}**",
-                    inline=False,
-                )
-
-                roll_val = results[0]
-
-                # Validate target range
-                if target < WFRP_SKILL_MIN or target > WFRP_SKILL_MAX:
-                    raise ValueError(
-                        f"Target must be between {WFRP_SKILL_MIN} and {WFRP_SKILL_MAX}"
-                    )
-
-                # Calculate Success Level (SL) - WFRP 4e formula
-                sl = (final_target // 10) - (roll_val // 10)
-                success = roll_val <= final_target
-
-                # Show result with SL
-                if success:
-                    result_text = f"✅ **Success** | SL: **{sl:+d}**"
-                    if (
-                        embed.color == discord.Color.blue()
-                    ):  # Only change if not already changed by doubles
-                        embed.color = discord.Color.green()
-                else:
-                    result_text = f"❌ **Failure** | SL: **{sl:+d}**"
-                    if (
-                        embed.color == discord.Color.blue()
-                    ):  # Only change if not already changed by doubles
-                        embed.color = discord.Color.red()
-
-                embed.add_field(name="Result", value=result_text, inline=False)
-
-                # 100 is always a fumble
-                if roll_val == WFRP_ROLL_FUMBLE:
-                    classification = "fumble"
-                else:
-                    # treat 1 as the low double (01) and detect matching-digit doubles
-                    is_double = roll_val == WFRP_ROLL_MIN_DOUBLE or (
-                        roll_val // 10
-                    ) == (roll_val % 10)
-                    if not is_double:
-                        classification = "none"
-                    else:
-                        # Use the final modified target for crit/fumble classification
-                        classification = check_wfrp_doubles(roll_val, final_target)
-
-                if classification != "none":
-                    if classification == "crit":
-                        desc = f"🎉 **Critical Success!** (Rolled {roll_val:02d} ≤ {final_target})"
-                        embed.color = discord.Color.green()
-                    else:
-                        desc = f"💀 **Fumble!** (Rolled {roll_val:02d})"
-                        embed.color = discord.Color.dark_red()
-
-                    embed.add_field(name="⚡ Doubles!", value=desc, inline=False)
-
-            # Add footer with roller info
+            # Send the embed
             if is_slash:
-                embed.set_footer(text=f"Rolled by {context.user.display_name}")
                 await context.response.send_message(embed=embed)
             else:
-                embed.set_footer(text=f"Rolled by {context.author.display_name}")
                 await context.send(embed=embed)
 
-            # Send command log
-            await _send_command_log(context, dice, target, modifier, is_slash)
-
-        except ValueError as e:
-            # Handle parsing errors
-            error_embed = discord.Embed(
-                title="❌ Invalid Dice Notation",
-                description=str(e),
-                color=discord.Color.red(),
-            )
-            error_embed.add_field(
-                name="Examples",
-                value="• `/roll 1d100`\n• `/roll 3d10`\n• `/roll 2d6+5`\n• `/roll 1d20-3`",
-                inline=False,
-            )
-            if is_slash:
-                await context.response.send_message(embed=error_embed, ephemeral=True)
-            else:
-                await context.send(embed=error_embed)
-
-        except (discord.DiscordException, AttributeError) as e:  # noqa: BLE001
-            # Handle unexpected errors (broad exception intentional for user safety)
-            if is_slash:
-                # Use followup if response was already used/failed
-                try:
-                    if context.response.is_done():
-                        await context.followup.send(
-                            f"❌ An error occurred: {str(e)}", ephemeral=True
-                        )
-                    else:
-                        await context.response.send_message(
-                            f"❌ An error occurred: {str(e)}", ephemeral=True
-                        )
-                except Exception:  # noqa: BLE001, S110
-                    # Even followup failed, last resort attempt (broad exception intentional)
-                    await context.followup.send(
-                        f"❌ An error occurred: {str(e)}", ephemeral=True
-                    )
-            else:
-                await context.send(f"❌ An error occurred: {str(e)}")
-
-    async def _send_command_log(
-        context: Union[discord.Interaction, commands.Context],
-        dice: str,
-        target: Optional[int],
-        modifier: int,
-        is_slash: bool,
-    ) -> None:
-        """
-        Send command details to boat-travelling-log channel.
-
-        Logs all roll commands with user info, dice notation, and WFRP
-        parameters. Helps track command usage and debug issues.
-
-        Args:
-            context: Discord interaction or command context
-            dice: Dice notation that was rolled
-            target: Optional WFRP target value
-            modifier: WFRP difficulty modifier
-            is_slash: True for slash commands, False for prefix commands
-
-        Note:
-            Fails silently if log channel doesn't exist or bot lacks permissions.
-            Logging is optional and should not break the main command flow.
-        """
-        try:
-            # Find the log channel
-            log_channel = discord.utils.get(
-                context.guild.text_channels, name=CHANNEL_COMMAND_LOG
-            )
-            if not log_channel:
-                return  # Silently fail if log channel doesn't exist
-
-            # Get username
-            if is_slash:
-                username = context.user.display_name
-                user_id = context.user.id
-            else:
-                username = context.author.display_name
-                user_id = context.author.id
+            # Send command log using CommandLogger service
+            logger = CommandLogger()
+            fields = {"Dice": dice}
+            if target is not None:
+                fields["Target"] = str(target)
+                fields["Modifier"] = f"{modifier:+d}"
 
             # Build command string
             if is_slash:
@@ -389,23 +187,117 @@ def setup(bot: commands.Bot) -> None:
                 if modifier != DEFAULT_DIFFICULTY:
                     command_str += f" {modifier}"
 
-            # Create log embed
-            log_embed = discord.Embed(
-                title="🎲 Command Log: Roll",
-                description=f"**User:** {username} (`{user_id}`)\n**Command:** `{command_str}`",
-                color=discord.Color.blue(),
-                timestamp=discord.utils.utcnow(),
+            await logger.log_command_from_context(
+                context=context,
+                command_name="roll",
+                command_string=command_str,
+                fields=fields,
+                is_slash=is_slash,
             )
 
-            log_embed.add_field(name="Dice", value=dice, inline=True)
-            if target is not None:
-                log_embed.add_field(name="Target", value=str(target), inline=True)
-                log_embed.add_field(
-                    name="Modifier", value=f"{modifier:+d}", inline=True
-                )
+        except ValueError as e:
+            # Handle parsing errors
+            await handle_value_error(
+                context,
+                e,
+                is_slash,
+                "roll",
+                usage_examples=[
+                    "/roll 1d100",
+                    "/roll 3d10",
+                    "/roll 2d6+5",
+                    "/roll 1d100 target:45 modifier:20",
+                ],
+            )
 
-            await log_channel.send(embed=log_embed)
+        except (discord.DiscordException, AttributeError) as e:  # noqa: BLE001
+            # Handle unexpected errors (broad exception intentional for user safety)
+            await handle_discord_error(context, e, is_slash)
 
-        except (discord.Forbidden, discord.HTTPException, AttributeError):
-            # Silently fail - logging is not critical
-            pass
+    def _build_roll_embed(
+        result: RollResult,
+        context: Union[discord.Interaction, commands.Context],
+        is_slash: bool,
+    ) -> discord.Embed:
+        """
+        Build a Discord embed from a RollResult.
+
+        Creates a formatted embed showing dice roll details, WFRP mechanics,
+        and outcome information with appropriate colors.
+
+        Args:
+            result: The roll result from RollService
+            context: Discord interaction or command context (for user info)
+            is_slash: True for slash commands, False for prefix commands
+
+        Returns:
+            discord.Embed ready to send to Discord
+        """
+        # Start with blue color (will change based on result)
+        embed = discord.Embed(title="🎲 Dice Roll", color=discord.Color.blue())
+
+        # Add the roll details
+        notation_display = f"{result.num_dice}d{result.die_size}"
+        if result.dice_modifier != 0:
+            notation_display += f"{result.dice_modifier:+d}"
+
+        embed.add_field(name="Roll", value=f"`{notation_display}`", inline=False)
+
+        # Show individual results if reasonable
+        if result.num_dice <= MAX_DICE_DISPLAY:
+            results_str = ", ".join(str(r) for r in result.individual_rolls)
+            embed.add_field(name="Results", value=f"[{results_str}]", inline=False)
+        else:
+            embed.add_field(
+                name="Results", value=f"*{result.num_dice} dice rolled*", inline=False
+            )
+
+        # Show dice modifier if present
+        if result.dice_modifier != 0:
+            modifier_str = f"{result.dice_modifier:+d}"
+            embed.add_field(name="Dice Modifier", value=modifier_str, inline=True)
+
+        # Show total
+        embed.add_field(name="**Total**", value=f"**{result.total}**", inline=True)
+
+        # WFRP-specific information
+        if result.is_wfrp_test:
+            # Show target and difficulty
+            difficulty_name = DIFFICULTY_NAMES.get(
+                result.difficulty, f"{result.difficulty:+d}"
+            )
+            embed.add_field(
+                name="WFRP Target",
+                value=f"Skill: {result.target} | Difficulty: {difficulty_name} ({result.difficulty:+d})\n**Final Target: {result.final_target}**",
+                inline=False,
+            )
+
+            # Show result with SL and set color
+            if result.success:
+                result_text = f"✅ **Success** | SL: **{result.success_level:+d}**"
+                embed.color = discord.Color.green()
+            else:
+                result_text = f"❌ **Failure** | SL: **{result.success_level:+d}**"
+                embed.color = discord.Color.red()
+
+            embed.add_field(name="Result", value=result_text, inline=False)
+
+            # Show doubles (criticals/fumbles)
+            if result.is_critical:
+                roll_val = result.individual_rolls[0]
+                desc = f"🎉 **Critical Success!** (Rolled {roll_val:02d} ≤ {result.final_target})"
+                embed.add_field(name="⚡ Doubles!", value=desc, inline=False)
+                embed.color = discord.Color.green()
+            elif result.is_fumble:
+                roll_val = result.individual_rolls[0]
+                desc = f"💀 **Fumble!** (Rolled {roll_val:02d})"
+                embed.add_field(name="⚡ Doubles!", value=desc, inline=False)
+                embed.color = discord.Color.dark_red()
+
+        # Add footer with roller info
+        if is_slash:
+            embed.set_footer(text=f"Rolled by {context.user.display_name}")
+        else:
+            embed.set_footer(text=f"Rolled by {context.author.display_name}")
+
+        return embed

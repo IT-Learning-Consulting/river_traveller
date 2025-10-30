@@ -47,46 +47,14 @@ State Management:
     - Event cooldown tracking (cold fronts, heat waves)
 """
 
-from typing import Optional, Union
+from typing import Optional
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from commands.weather_modules.handler import WeatherCommandHandler
-
-
-# Constants
-ROLE_GM = "GM"
-
-
-def is_gm(user: discord.Member) -> bool:
-    """
-    Check if user has GM permissions (server owner or GM role).
-
-    Used to control access to weather override and configuration commands.
-    Prevents non-GMs from bypassing weather mechanics or altering journey state.
-
-    Args:
-        user: Discord member to check for GM permissions
-
-    Returns:
-        True if user is server owner or has GM role, False otherwise
-
-    Example:
-        >>> if is_gm(member):
-        ...     # Allow configuration changes
-        ...     pass
-    """
-    # Server owner is always GM
-    if user.guild.owner_id == user.id:
-        return True
-
-    # Check for GM role
-    gm_role = discord.utils.get(user.guild.roles, name=ROLE_GM)
-    if gm_role and gm_role in user.roles:
-        return True
-
-    return False
+from commands.permissions import is_gm
+from commands.error_handlers import handle_discord_error, handle_value_error
 
 
 def setup(bot: commands.Bot) -> None:
@@ -263,12 +231,12 @@ def setup(bot: commands.Bot) -> None:
             )
         except ValueError as e:
             # Validation error - inform user
-            await interaction.followup.send(f"❌ {str(e)}", ephemeral=True)
+            await handle_value_error(
+                interaction, e, is_slash=True, command_name="Weather Stage Config"
+            )
         except Exception as e:  # noqa: BLE001
             # Generic error (broad exception intentional for user safety)
-            await interaction.followup.send(
-                f"❌ An error occurred: {str(e)}", ephemeral=True
-            )
+            await handle_discord_error(interaction, e, is_slash=True)
 
     # Prefix command for stage configuration
     @bot.command(name="weather-stage-config")
