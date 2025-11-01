@@ -35,6 +35,7 @@ from typing import Optional, Dict, List
 from db.weather_storage import WeatherStorage
 from db.weather_data import WIND_STRENGTH, WIND_DIRECTION
 from utils.weather_mechanics import get_wind_modifiers, get_weather_effects
+from db.models.weather_models import WindTimeline, WindCondition
 
 # Module-level storage instance (can be overridden for testing)
 _storage_instance: Optional[WeatherStorage] = None
@@ -139,25 +140,25 @@ def get_active_weather_modifiers(
         return None
 
     # Get current day weather
-    current_day = journey["current_day"]
+    current_day = journey.current_day
     weather = storage.get_daily_weather(guild_id, current_day)
 
     if not weather:
         return None
 
-    # Defensive: Check if wind_timeline exists and is not empty
-    wind_timeline = weather.get("wind_timeline", [])
+    # Get wind_timeline from dataclass
+    wind_timeline = weather.wind_timeline
     if not wind_timeline:
         return None
 
-    # Extract wind for specific time
-    wind_data = _get_wind_for_time(wind_timeline, time_of_day.lower())
+    # Extract wind for specific time (returns WindCondition dataclass)
+    wind_data = _get_wind_for_time_dataclass(wind_timeline, time_of_day.lower())
 
     if not wind_data:
         return None
 
-    # Get wind modifiers from data
-    wind_mods = get_wind_modifiers(wind_data["strength"], wind_data["direction"])
+    # Get wind modifiers from WindCondition dataclass
+    wind_mods = get_wind_modifiers(wind_data.strength, wind_data.direction)
 
     # Parse wind modifier percentage (e.g., "+10%" → 10)
     speed_mod = _parse_speed_modifier(wind_mods["modifier"])
@@ -176,17 +177,17 @@ def get_active_weather_modifiers(
     )
 
     # Get weather effects
-    weather_effects_data = get_weather_effects(weather["weather_type"])
+    weather_effects_data = get_weather_effects(weather.weather_type)
 
     return {
         "wind_modifier_percent": speed_mod,
-        "wind_strength": wind_data["strength"],
-        "wind_direction": wind_data["direction"],
+        "wind_strength": wind_data.strength,
+        "wind_direction": wind_data.direction,
         "wind_strength_display": WIND_STRENGTH.get(
-            wind_data["strength"], DEFAULT_WIND_DISPLAY
+            wind_data.strength, DEFAULT_WIND_DISPLAY
         ),
         "wind_direction_display": WIND_DIRECTION.get(
-            wind_data["direction"], DEFAULT_WIND_DISPLAY
+            wind_data.direction, DEFAULT_WIND_DISPLAY
         ),
         "requires_tacking": requires_tacking,
         "requires_test": requires_test,
@@ -230,6 +231,39 @@ def _get_wind_for_time(wind_timeline: List[Dict], time_of_day: str) -> Optional[
             return wind_entry
 
     return None
+
+
+def _get_wind_for_time_dataclass(
+    wind_timeline: WindTimeline, time_of_day: str
+) -> Optional[WindCondition]:
+    """
+    Extract wind data for specific time of day from WindTimeline dataclass.
+
+    Args:
+        wind_timeline: WindTimeline dataclass with dawn/midday/dusk/midnight attributes
+        time_of_day: Time period (dawn, midday, dusk, midnight). Case-insensitive
+
+    Returns:
+        Optional[WindCondition]: WindCondition dataclass for the time period,
+            or None if invalid time_of_day
+
+    Example:
+        >>> wind = _get_wind_for_time_dataclass(timeline, "midday")
+        >>> print(wind.strength)
+        moderate
+    """
+    time_lower = time_of_day.lower()
+
+    if time_lower == TIME_DAWN:
+        return wind_timeline.dawn
+    elif time_lower == TIME_MIDDAY:
+        return wind_timeline.midday
+    elif time_lower == TIME_DUSK:
+        return wind_timeline.dusk
+    elif time_lower == TIME_MIDNIGHT:
+        return wind_timeline.midnight
+    else:
+        return None
 
 
 def _parse_speed_modifier(modifier_text: str) -> int:
@@ -357,7 +391,7 @@ def get_weather_summary(guild_id: str) -> Optional[Dict]:
     if not journey:
         return None
 
-    current_day = journey["current_day"]
+    current_day = journey.current_day
     weather = storage.get_daily_weather(guild_id, current_day)
 
     if not weather:
@@ -365,8 +399,8 @@ def get_weather_summary(guild_id: str) -> Optional[Dict]:
 
     summary = {
         "day_number": current_day,
-        "season": journey["season"],
-        "province": journey["province"],
+        "season": journey.season,
+        "province": journey.province,
         "times": {},
     }
 

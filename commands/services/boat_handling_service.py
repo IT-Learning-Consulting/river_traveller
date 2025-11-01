@@ -8,9 +8,8 @@ WFRP test mechanics, and narrative outcome generation.
 Usage Example:
     >>> service = BoatHandlingService()
     >>> result = service.perform_boat_test(
-    ...     character_data=char,
+    ...     character=char,
     ...     difficulty=0,
-    ...     lore_riverways=25,
     ...     weather_penalty=-10
     ... )
     >>> print(f"Outcome: {result.outcome}, SL: {result.success_level}")
@@ -18,8 +17,9 @@ Usage Example:
 
 import random
 from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from typing import Optional
 
+from db.models.character_models import Character
 from utils.wfrp_mechanics import check_wfrp_doubles
 
 
@@ -118,8 +118,9 @@ class BoatHandlingService:
     """
     Service for boat handling test logic and narrative generation.
 
-    Provides methods for determining boat handling skills, calculating bonuses,
-    executing tests, and generating rich narrative outcomes based on success levels.
+    Provides methods for executing tests and generating rich narrative outcomes
+    based on success levels. Skill determination and lore bonus calculation are
+    now handled by the Character dataclass itself.
     """
 
     # Success Level thresholds for outcome descriptions
@@ -128,64 +129,9 @@ class BoatHandlingService:
     SL_SUCCESS = 2
     SL_MARGINAL = 0
 
-    def determine_skill(self, river_skills: Dict[str, int]) -> tuple[str, int]:
-        """
-        Determine which boat handling skill to use (Sail preferred, Row fallback).
-
-        Args:
-            river_skills: Dictionary of river travel skills
-                         {"Row": 35, "Sail": 45, "Lore (Riverways)": 20}
-
-        Returns:
-            Tuple of (skill_name, skill_value)
-
-        Raises:
-            ValueError: If character has neither Row nor Sail skill
-
-        Examples:
-            >>> service = BoatHandlingService()
-            >>> service.determine_skill({"Row": 30, "Sail": 45})
-            ("Sail", 45)
-            >>> service.determine_skill({"Row": 30})
-            ("Row", 30)
-        """
-        row_skill = river_skills.get("Row")
-        sail_skill = river_skills.get("Sail")
-
-        # Prefer Sail if available, fallback to Row
-        if sail_skill is not None and sail_skill > 0:
-            return ("Sail", sail_skill)
-        elif row_skill is not None and row_skill > 0:
-            return ("Row", row_skill)
-        else:
-            raise ValueError("Character has no Row or Sail skill!")
-
-    def calculate_lore_bonus(self, lore_riverways: Optional[int]) -> int:
-        """
-        Calculate Lore (Riverways) bonus (first digit of skill value).
-
-        Args:
-            lore_riverways: Lore (Riverways) skill value (0-100), or None if not learned
-
-        Returns:
-            Bonus value (0-9)
-
-        Examples:
-            >>> service = BoatHandlingService()
-            >>> service.calculate_lore_bonus(25)
-            2
-            >>> service.calculate_lore_bonus(0)
-            0
-            >>> service.calculate_lore_bonus(None)
-            0
-        """
-        if lore_riverways is None or lore_riverways <= 0:
-            return 0
-        return lore_riverways // 10
-
     def perform_boat_test(
         self,
-        character_data: Dict[str, Any],
+        character: Character,
         difficulty: int,
         weather_penalty: int = 0,
     ) -> BoatHandlingResult:
@@ -193,8 +139,7 @@ class BoatHandlingService:
         Perform a complete boat handling test with narrative outcome generation.
 
         Args:
-            character_data: Character dictionary from character_data.py
-                           Must contain: name, species, status, river_travelling_skills
+            character: Character dataclass from character_data.get_character()
             difficulty: Base difficulty modifier (-50 to +60)
             weather_penalty: Additional penalty from weather conditions (usually negative)
 
@@ -205,33 +150,23 @@ class BoatHandlingService:
             ValueError: If character has no boat handling skills
 
         Example:
+            >>> from db.character_data import get_character
             >>> service = BoatHandlingService()
-            >>> char = {
-            ...     "name": "Anara of Sānxiá",
-            ...     "species": "Human",
-            ...     "status": "Brass 3",
-            ...     "river_travelling_skills": {
-            ...         "Row": 30,
-            ...         "Sail": 45,
-            ...         "Lore (Riverways)": 20
-            ...     }
-            ... }
+            >>> char = get_character("anara")
             >>> result = service.perform_boat_test(char, difficulty=-10, weather_penalty=-5)
             >>> print(result.outcome)
             Success
         """
         # Extract character info
-        char_name = character_data["name"]
-        char_species = character_data["species"]
-        char_status = character_data["status"]
-        river_skills = character_data.get("river_travelling_skills", {})
+        char_name = character.name
+        char_species = character.species
+        char_status = character.status
 
-        # Determine skill to use
-        skill_name, skill_value = self.determine_skill(river_skills)
+        # Determine skill to use (method returns tuple of (skill_name, skill_value))
+        skill_name, skill_value = character.get_boat_handling_skill()
 
-        # Calculate Lore bonus
-        lore_riverways = river_skills.get("Lore (Riverways)", 0)
-        lore_bonus = self.calculate_lore_bonus(lore_riverways)
+        # Get Lore bonus
+        lore_bonus = character.get_lore_riverways_bonus()
 
         # Calculate final difficulty and target
         final_difficulty = difficulty + weather_penalty
@@ -294,7 +229,7 @@ class BoatHandlingService:
         success_level: int,
         is_critical: bool,
         is_fumble: bool,
-    ) -> Dict[str, Any]:
+    ) -> dict:
         """
         Generate narrative outcome based on test results.
 

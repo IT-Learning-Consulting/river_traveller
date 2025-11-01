@@ -200,7 +200,7 @@ def setup(bot: commands.Bot) -> None:
             # Perform boat handling test using service
             service = BoatHandlingService()
             result = service.perform_boat_test(
-                character_data=char,
+                character=char,
                 difficulty=difficulty,
                 weather_penalty=weather_penalty,
             )

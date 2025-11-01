@@ -2,14 +2,17 @@
 Weather command module - refactored for maintainability.
 
 This module provides a clean separation of concerns for weather commands:
-- handler: Business logic and orchestration
-- display: Discord embed creation and display
-- stages: Multi-day stage display
-- notifications: GM channel notifications
+- handler: Business logic orchestration (delegates to service layer)
+- services/: Service layer (JourneyService, DailyWeatherService, NotificationService, DisplayService)
+- stages: Multi-day stage display (legacy, still in use)
 - formatters: Pure utility functions for formatting
+
+Legacy modules removed in Phase 2:
+- display.py: Replaced by services/display_service.py
+- notifications.py: Replaced by services/notification_service.py
 """
 
-# Import available modules (some may not be implemented yet during refactoring)
+# Import available modules
 try:
     from commands.weather_modules.formatters import WeatherFormatters
 except ImportError:
@@ -21,24 +24,12 @@ except ImportError:
     WeatherCommandHandler = None
 
 try:
-    from commands.weather_modules.display import WeatherDisplayManager
-except ImportError:
-    WeatherDisplayManager = None
-
-try:
     from commands.weather_modules.stages import StageDisplayManager
 except ImportError:
     StageDisplayManager = None
 
-try:
-    from commands.weather_modules.notifications import NotificationManager
-except ImportError:
-    NotificationManager = None
-
 __all__ = [
     "WeatherCommandHandler",
-    "WeatherDisplayManager",
     "StageDisplayManager",
-    "NotificationManager",
     "WeatherFormatters",
 ]

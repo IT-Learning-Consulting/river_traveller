@@ -14,12 +14,13 @@ Key Responsibilities:
     - Stage-based progression (multi-day weather generation)
 
 Architecture:
-    The handler acts as a facade, delegating to specialized modules:
+    The handler acts as a facade, delegating to specialized services:
     - WeatherStorage: Persistent state and data storage
-    - WeatherMechanics: Weather generation algorithms
-    - WeatherDisplayManager: User-facing display formatting
-    - NotificationManager: GM channel notifications
-    - StageDisplayManager: Multi-day stage summaries
+    - JourneyService: Journey lifecycle management
+    - DailyWeatherService: Weather generation and progression
+    - DisplayService: User-facing display formatting
+    - NotificationService: GM channel notifications
+    - StageDisplayManager: Multi-day stage summaries (legacy, still in use)
 
 Usage Example:
     >>> handler = WeatherCommandHandler()
@@ -29,9 +30,9 @@ Usage Example:
 Command Flow:
     1. Command received → handle_command() routes to action handler
     2. Action handler validates inputs and retrieves journey state
-    3. Weather generation creates daily data (if applicable)
-    4. Display manager sends formatted embed to user
-    5. Notification manager sends GM notification
+    3. Weather service creates daily data (if applicable)
+    4. Display service sends formatted embed to user
+    5. Notification service sends GM notification
     6. Command logged to command-log channel
 """
 
@@ -108,41 +109,34 @@ EMOJI_SUCCESS = "✅"
 
 class WeatherCommandHandler:
     """
-    Main handler for weather command routing and orchestration.
+    Central orchestrator for weather command operations.
 
-    This class coordinates all weather-related operations, acting as the central
-    controller for the weather system. It routes commands to appropriate handlers,
-    manages journey state, generates weather data, and coordinates display and
-    notifications.
+    This handler acts as a facade, coordinating between the service layer,
+    storage, and Discord API. It routes commands to appropriate handlers,
+    manages error responses, and logs command execution.
 
-    Responsibilities:
-        - Route command actions to appropriate handler methods
-        - Generate daily weather data using weather mechanics
-        - Manage journey lifecycle (start, progress, end)
-        - Coordinate between storage, display, and notification modules
-        - Handle errors and provide user feedback
-        - Support stage-based progression for multi-day travel
-        - Log command execution to command-log channel
+    Architecture:
+        - Thin orchestration layer (no business logic)
+        - Delegates to specialized services:
+            * JourneyService: Journey lifecycle and state management
+            * DailyWeatherService: Weather generation and progression
+            * NotificationService: GM channel notifications
+            * DisplayService: User-facing Discord embeds
+        - Uses CommandLogger for command tracking
+        - Maintains WeatherStorage for persistent state
 
     Attributes:
-        storage (WeatherStorage): Persistent storage for journey and weather data
-        display (WeatherDisplayManager): Static class for user-facing displays
-        stage_display (StageDisplayManager): Static class for stage summaries
-        notifications (NotificationManager): Static class for GM notifications
-
-    Design Pattern:
-        This class uses a facade pattern, providing a simple interface for
-        complex weather system operations while delegating specific tasks
-        to specialized modules.
+        storage (WeatherStorage): Database access layer
+        journey_service (JourneyService): Journey lifecycle operations
+        weather_service (DailyWeatherService): Weather generation logic
+        notification_service (NotificationService): GM notifications
+        display_service (DisplayService): Discord embed displays
+        logger (CommandLogger): Command execution tracking
+        stage_display (StageDisplayManager): Multi-day stage displays (legacy)
 
     Example:
         >>> handler = WeatherCommandHandler()
-        >>> # Generate next day's weather
         >>> await handler.handle_command(ctx, "next", None, None, None, False)
-        >>> # Start new journey
-        >>> await handler.handle_command(ctx, "journey", "winter", "reikland", None, True)
-        >>> # View historical weather
-        >>> await handler.handle_command(ctx, "view", None, None, 5, False)
     """
 
     def __init__(self) -> None:

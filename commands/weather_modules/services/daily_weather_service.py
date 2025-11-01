@@ -113,14 +113,24 @@ class DailyWeatherService:
             # Weather exists, advance to next day
             new_day = self.storage.advance_day(guild_id)
 
-            # Check for wind continuity from previous midnight
-            wind_timeline_data = current_weather.get("wind_timeline", [])
-            if wind_timeline_data and len(wind_timeline_data) >= 4:
-                previous_midnight = wind_timeline_data[3]
-                wind_timeline = generate_daily_wind_with_previous(previous_midnight)
+            # Check for wind continuity from previous midnight (current_weather is DailyWeather dataclass)
+            wind_timeline_data = current_weather.wind_timeline
+            if wind_timeline_data:
+                # Access midnight WindCondition from the WindTimeline dataclass
+                previous_midnight = wind_timeline_data.midnight
+                # Convert WindCondition dataclass to dict for generate_daily_wind_with_previous
+                previous_midnight_dict = {
+                    "strength": previous_midnight.strength,
+                    "direction": previous_midnight.direction,
+                    "rolls": previous_midnight.rolls,
+                    "modifier": previous_midnight.modifier,
+                    "notes": previous_midnight.notes,
+                    "time": "midnight"
+                }
+                wind_timeline = generate_daily_wind_with_previous(previous_midnight_dict)
                 continuity_note = (
                     f"🔄 Wind carried over from Day {current_day} midnight: "
-                    f"{previous_midnight['strength']} {previous_midnight['direction']}"
+                    f"{previous_midnight.strength} {previous_midnight.direction}"
                 )
             else:
                 # No valid wind timeline - generate fresh
@@ -139,27 +149,31 @@ class DailyWeatherService:
             else None
         )
 
-        # Extract special event state from previous weather
-        cold_front_days = (
-            previous_weather.get("cold_front_days_remaining", 0)
-            if previous_weather
-            else 0
-        )
-        cold_front_total = (
-            previous_weather.get("cold_front_total_duration", 0)
-            if previous_weather
-            else 0
-        )
-        heat_wave_days = (
-            previous_weather.get("heat_wave_days_remaining", 0)
-            if previous_weather
-            else 0
-        )
-        heat_wave_total = (
-            previous_weather.get("heat_wave_total_duration", 0)
-            if previous_weather
-            else 0
-        )
+        # Extract special event state from previous weather (DailyWeather dataclass)
+        if previous_weather and previous_weather.special_event:
+            # Previous weather has a special event
+            if previous_weather.special_event.event_type == "cold_front":
+                cold_front_days = previous_weather.special_event.days_remaining or 0
+                cold_front_total = previous_weather.special_event.total_duration or 0
+                heat_wave_days = 0
+                heat_wave_total = 0
+            elif previous_weather.special_event.event_type == "heat_wave":
+                heat_wave_days = previous_weather.special_event.days_remaining or 0
+                heat_wave_total = previous_weather.special_event.total_duration or 0
+                cold_front_days = 0
+                cold_front_total = 0
+            else:
+                # No active special event
+                cold_front_days = 0
+                cold_front_total = 0
+                heat_wave_days = 0
+                heat_wave_total = 0
+        else:
+            # No previous weather or no special event
+            cold_front_days = 0
+            cold_front_total = 0
+            heat_wave_days = 0
+            heat_wave_total = 0
 
         # Get cooldown trackers
         days_since_cf, days_since_hw = self.storage.get_cooldown_status(guild_id)
