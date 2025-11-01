@@ -72,8 +72,7 @@ async def send_error_embed(
 
     if is_slash:
         # Check if response already sent to avoid errors
-        # Use getattr with default for better test compatibility
-        if getattr(context.response, "is_done", lambda: False)():
+        if context.response.is_done():
             await context.followup.send(embed=embed, ephemeral=ephemeral)
         else:
             await context.response.send_message(embed=embed, ephemeral=ephemeral)
@@ -112,8 +111,7 @@ async def send_info_embed(
             embed.add_field(name=name, value=value, inline=False)
 
     if is_slash:
-        # Use getattr with default for better test compatibility
-        if getattr(context.response, "is_done", lambda: False)():
+        if context.response.is_done():
             await context.followup.send(embed=embed, ephemeral=ephemeral)
         else:
             await context.response.send_message(embed=embed, ephemeral=ephemeral)
@@ -197,8 +195,7 @@ async def handle_discord_error(
 
     if is_slash:
         try:
-            # Use getattr with default for better test compatibility
-            if getattr(context.response, "is_done", lambda: False)():
+            if context.response.is_done():
                 # Response already sent, use followup
                 await context.followup.send(error_message, ephemeral=True)
             else:

@@ -22,9 +22,6 @@ Usage:
 CHANNEL_COMMAND_LOG = "boat-travelling-log"
 CHANNEL_GM_NOTIFICATIONS = "boat-travelling-notifications"
 
-# Discord role names
-ROLE_GM = "GM"
-
 
 # ============================================================================
 # WFRP Mechanics Constants
