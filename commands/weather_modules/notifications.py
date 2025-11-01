@@ -47,9 +47,7 @@ TITLE_SPECIAL_EVENTS_HEAT = "☀️ Special Weather Events"
 TITLE_NOTES = "💡 Notes"
 
 # Notification messages
-MSG_WIND_CHANGE_NOTE = (
-    "• Wind may change at midday, dusk, or midnight (10% chance each check)"
-)
+MSG_WIND_CHANGE_NOTE = "• Wind is checked at dawn, midday, dusk, and midnight (10% chance to change each check)"
 MSG_CALM_CONDITIONS = "Calm conditions: -10 penalty, 25% speed"
 MSG_CALM_ALL_DAY = "Calm all day (+0)"
 MSG_NO_HAZARDS = "No weather-related hazards"

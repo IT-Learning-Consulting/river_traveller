@@ -294,7 +294,7 @@ def generate_daily_wind_with_previous(
 ) -> List[Dict[str, str]]:
     """
     Generate wind conditions for a new day, starting from previous day's midnight wind.
-    This ensures weather continuity across days.
+    This ensures weather continuity across days, with wind checks at dawn, midday, dusk, midnight.
 
     Args:
         previous_midnight_wind: Dict with 'strength' and 'direction' from yesterday's midnight
@@ -302,21 +302,14 @@ def generate_daily_wind_with_previous(
     Returns:
         List of dicts with 'time', 'strength', 'direction', 'changed' keys
     """
-    # Start with previous midnight conditions at dawn
+    # Start with previous midnight conditions
     strength = previous_midnight_wind["strength"]
     direction = previous_midnight_wind["direction"]
 
-    wind_timeline = [
-        {
-            "time": "Dawn",
-            "strength": strength,
-            "direction": direction,
-            "changed": False,  # Not a change, it's continuity
-        }
-    ]
+    wind_timeline = []
 
-    # Check for changes at midday, dusk, midnight
-    for time in ["Midday", "Dusk", "Midnight"]:
+    # Check for changes at dawn, midday, dusk, midnight (all 4 time periods)
+    for time in ["Dawn", "Midday", "Dusk", "Midnight"]:
         changed, strength = check_wind_change(strength)
 
         # If wind changed, may also change direction
