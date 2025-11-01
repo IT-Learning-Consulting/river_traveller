@@ -1,0 +1,77 @@
+# Pylint configuration for WFRP Traveling Bot
+# This file configures pylint to match the project's quality standards
+
+[MASTER]
+# Use multiple processes to speed up Pylint
+jobs=1
+
+# Pickle collected data for later comparisons
+persistent=yes
+
+[MESSAGES CONTROL]
+# Disable specific warnings globally
+disable=
+    C0301,  # line-too-long (we handle this with editors/formatters)
+    C0103,  # invalid-name (WFRP uses many uppercase constants)
+    W0718   # broad-exception-caught (Discord commands need broad catching)
+
+[BASIC]
+# Good variable names which should always be accepted
+good-names=
+    i,j,k,  # Loop counters
+    ex,e,   # Exceptions
+    _,      # Unused variables
+    id,     # Discord IDs
+    sl,     # Success Level (WFRP term)
+    ws,bs,s,t,ag,dex,int,wp,fel  # WFRP characteristics
+
+[DESIGN]
+# Maximum number of arguments for function / method
+max-args=5
+
+# Maximum number of attributes for a class
+max-attributes=7
+
+# Maximum number of boolean expressions in a if statement
+max-bool-expr=5
+
+# Maximum number of branch for function / method body
+max-branches=12
+
+# Maximum number of locals for function / method body
+max-locals=15
+
+# Maximum number of return / yield for function / method body
+max-returns=6
+
+# Maximum number of statements in function / method body
+max-statements=50
+
+[IMPORTS]
+# Deprecated modules which should not be used
+deprecated-modules=
+    optparse,
+    tkinter.tix
+
+[REPORTS]
+# Set the output format
+output-format=text
+
+# Tells whether to display a full report or only the messages
+reports=no
+
+# Activate the evaluation score
+score=yes
+
+[TYPECHECK]
+# List of module names for which member attributes should not be checked
+ignored-modules=
+
+[FORMAT]
+# Maximum number of characters on a single line (disabled globally via C0301)
+max-line-length=100
+
+[tool:pylint.MASTER]
+# For per-file ignores, use command line: pylint --disable=E0401,W0621 tests/
+# Or add this to your IDE/CI configuration:
+# pylint tests/ --disable=E0401,W0621
