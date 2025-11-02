@@ -103,6 +103,12 @@ WIND_CHILL_VERY_STRONG: int = -10
 WIND_CHILL_WINDS_BRACING_STRONG: List[str] = ["bracing", "strong"]
 WIND_CHILL_WINDS_VERY_STRONG: List[str] = ["very_strong"]
 
+# Weather type temperature modifiers (applied before wind chill)
+# These affect actual temperature, not perceived temperature
+WEATHER_TEMP_DRY: int = 5  # Dry weather adds +5°C
+WEATHER_TEMP_DOWNPOUR: int = -5  # Downpour adds -5°C
+WEATHER_TEMP_BLIZZARD: int = -5  # Blizzard adds -5°C
+
 # Temperature description thresholds
 DESC_DANGEROUS_COLD: int = -15
 DESC_VERY_COLD: int = -10
@@ -218,6 +224,37 @@ def check_wind_change(current_strength: str) -> Tuple[bool, str, int]:
     return True, WIND_STRENGTH_ORDER[new_index], roll
 
 
+def check_direction_change(current_direction: str) -> Tuple[bool, str, int]:
+    """
+    Check if wind direction changes independently (10% chance per time period).
+
+    Direction changes on a roll of 1 on d10. When it changes, rolls new direction on d10.
+
+    Args:
+        current_direction: Current wind direction key
+
+    Returns:
+        Tuple[bool, str, int]: (changed, new_direction, roll). Examples:
+            - (False, "tailwind", 5) - No change, rolled 5
+            - (True, "north", 1) - Changed to north, rolled 1
+
+    Example:
+        >>> changed, new_direction, roll = check_direction_change("tailwind")
+        >>> if changed:
+        ...     print(f"Direction changed to {new_direction} (rolled {roll})")
+    """
+    roll = random.randint(D10_MIN, D10_MAX)
+
+    if roll != WIND_CHANGE_ROLL:
+        return False, current_direction, roll
+
+    # Direction changes - roll new direction
+    new_direction_roll = random.randint(D10_MIN, D10_MAX)
+    new_direction = get_wind_direction_from_roll(new_direction_roll)
+
+    return True, new_direction, roll
+
+
 def get_wind_modifiers(strength: str, direction: str) -> Dict[str, Optional[str]]:
     """
     Get wind modifiers for boat handling from lookup table.
@@ -253,41 +290,38 @@ def generate_daily_wind() -> List[Dict[str, str]]:
     Generate wind conditions for a full day (dawn, midday, dusk, midnight).
 
     Returns:
-        List of dicts with 'time', 'strength', 'direction', 'changed', 'strength_roll', 'direction_roll' keys
+        List of dicts with 'time', 'strength', 'direction', 'strength_changed', 'direction_changed', 'strength_roll', 'direction_roll' keys
     """
     # Initial wind at dawn
     strength, direction = generate_wind_conditions()
-    initial_direction_roll = random.randint(1, 10)  # The roll that determined initial direction
 
     wind_timeline = [
         {
             "time": "Dawn",
             "strength": strength,
             "direction": direction,
-            "changed": False,
+            "strength_changed": False,
+            "direction_changed": False,
             "strength_roll": None,  # No change check at dawn (initial)
-            "direction_roll": initial_direction_roll,
+            "direction_roll": None,  # No change check at dawn (initial)
         }
     ]
 
     # Check for changes at midday, dusk, midnight
     for time in ["Midday", "Dusk", "Midnight"]:
-        changed, strength, strength_roll = check_wind_change(strength)
+        # Check strength change independently (10% chance)
+        strength_changed, strength, strength_roll = check_wind_change(strength)
 
-        # If wind changed, may also change direction
-        direction_roll = None
-        if changed:
-            # 50% chance direction also changes
-            if random.randint(1, 2) == 1:
-                direction_roll = random.randint(1, 10)
-                direction = get_wind_direction_from_roll(direction_roll)
+        # Check direction change independently (10% chance)
+        direction_changed, direction, direction_roll = check_direction_change(direction)
 
         wind_timeline.append(
             {
                 "time": time,
                 "strength": strength,
                 "direction": direction,
-                "changed": changed,
+                "strength_changed": strength_changed,
+                "direction_changed": direction_changed,
                 "strength_roll": strength_roll,
                 "direction_roll": direction_roll,
             }
@@ -307,7 +341,7 @@ def generate_daily_wind_with_previous(
         previous_midnight_wind: Dict with 'strength' and 'direction' from yesterday's midnight
 
     Returns:
-        List of dicts with 'time', 'strength', 'direction', 'changed', 'strength_roll', 'direction_roll' keys
+        List of dicts with 'time', 'strength', 'direction', 'strength_changed', 'direction_changed', 'strength_roll', 'direction_roll' keys
     """
     # Start with previous midnight conditions
     strength = previous_midnight_wind["strength"]
@@ -317,22 +351,19 @@ def generate_daily_wind_with_previous(
 
     # Check for changes at dawn, midday, dusk, midnight (all 4 time periods)
     for time in ["Dawn", "Midday", "Dusk", "Midnight"]:
-        changed, strength, strength_roll = check_wind_change(strength)
+        # Check strength change independently (10% chance)
+        strength_changed, strength, strength_roll = check_wind_change(strength)
 
-        # If wind changed, may also change direction
-        direction_roll = None
-        if changed:
-            # 50% chance direction also changes
-            if random.randint(1, 2) == 1:
-                direction_roll = random.randint(1, 10)
-                direction = get_wind_direction_from_roll(direction_roll)
+        # Check direction change independently (10% chance)
+        direction_changed, direction, direction_roll = check_direction_change(direction)
 
         wind_timeline.append(
             {
                 "time": time,
                 "strength": strength,
                 "direction": direction,
-                "changed": changed,
+                "strength_changed": strength_changed,
+                "direction_changed": direction_changed,
                 "strength_roll": strength_roll,
                 "direction_roll": direction_roll,
             }
@@ -341,7 +372,7 @@ def generate_daily_wind_with_previous(
     return wind_timeline
 
 
-def roll_weather_condition(season: str) -> str:
+def roll_weather_condition(season: str) -> Tuple[str, int]:
     """
     Roll for weather condition based on season using d100 table.
 
@@ -352,15 +383,16 @@ def roll_weather_condition(season: str) -> str:
         season: Season name (spring, summer, autumn, winter)
 
     Returns:
-        str: Weather type key (e.g., "fair", "rain", "snow", "blizzard")
+        Tuple[str, int]: (weather_type, roll_value) - Weather type key and the d100 roll
 
     Example:
-        >>> weather = roll_weather_condition("winter")
-        >>> print(weather)
-        snow  # More likely in winter
+        >>> weather_type, roll = roll_weather_condition("winter")
+        >>> print(f"Rolled {roll}: {weather_type}")
+        Rolled 45: snow  # More likely in winter
     """
     roll = random.randint(D100_MIN, D100_MAX)
-    return get_weather_from_roll(season, roll)
+    weather_type = get_weather_from_roll(season, roll)
+    return weather_type, roll
 
 
 def get_weather_effects(weather_type: str) -> Dict[str, any]:
@@ -567,6 +599,38 @@ def handle_heat_wave(
     return DEFAULT_MODIFIER, DEFAULT_EVENT_DAYS, DEFAULT_EVENT_TOTAL
 
 
+def apply_weather_temperature_modifier(weather_type: str) -> int:
+    """
+    Apply weather-based temperature modifier.
+
+    Certain weather types affect actual temperature before wind chill is applied:
+    - Dry weather: +5°C (clear skies allow more solar heating)
+    - Downpour: -5°C (heavy rain cools the air)
+    - Blizzard: -5°C (heavy snow cools the air)
+
+    Args:
+        weather_type: Weather type key (e.g., "dry", "downpour", "blizzard")
+
+    Returns:
+        Temperature modifier in °C
+
+    Example:
+        >>> apply_weather_temperature_modifier("dry")
+        5
+        >>> apply_weather_temperature_modifier("downpour")
+        -5
+        >>> apply_weather_temperature_modifier("fair")
+        0
+    """
+    weather_modifiers = {
+        "dry": WEATHER_TEMP_DRY,
+        "downpour": WEATHER_TEMP_DOWNPOUR,
+        "blizzard": WEATHER_TEMP_BLIZZARD,
+    }
+
+    return weather_modifiers.get(weather_type, 0)
+
+
 def roll_temperature_with_special_events(
     season: str,
     province: str,
@@ -576,12 +640,20 @@ def roll_temperature_with_special_events(
     heat_wave_total: int = 0,
     days_since_last_cold_front: int = 99,
     days_since_last_heat_wave: int = 99,
+    weather_type: str = "",
 ) -> Tuple[int, str, str, int, int, int, int, int]:
     """
-    Roll for temperature including cold fronts, heat waves, and daily variation.
+    Roll for temperature including cold fronts, heat waves, weather effects, and daily variation.
 
     During active events, temperature still varies day-to-day but within
     the event's influence (e.g., cold front keeps it cold but not static).
+
+    Temperature Calculation Order:
+        1. Base temperature (province + season)
+        2. Special event modifiers (cold front -10°C, heat wave +10°C)
+        3. Daily variation (-15°C to +15°C from roll)
+        4. Weather type modifiers (dry +5°C, downpour/blizzard -5°C)
+        5. Wind chill applied separately later (not in this function)
 
     Args:
         season: Season name
@@ -592,6 +664,7 @@ def roll_temperature_with_special_events(
         heat_wave_total: Total duration of current heat wave
         days_since_last_cold_front: Days since last cold front ended
         days_since_last_heat_wave: Days since last heat wave ended
+        weather_type: Weather type key (e.g., "dry", "downpour", "blizzard")
 
     Returns:
         Tuple of (actual_temp, category, description, roll,
@@ -631,10 +704,13 @@ def roll_temperature_with_special_events(
         cold_front_days > 0,  # cold_front_active flag
     )
 
-    # 6. Calculate final temperature: base + event + daily_variation
-    actual_temp = base_temp + cold_mod + heat_mod + daily_modifier
+    # 6. Apply weather-based temperature modifier (dry +5°C, downpour/blizzard -5°C)
+    weather_mod = apply_weather_temperature_modifier(weather_type)
 
-    # 7. Determine category based on final temperature (not base)
+    # 7. Calculate final temperature: base + event + daily_variation + weather
+    actual_temp = base_temp + cold_mod + heat_mod + daily_modifier + weather_mod
+
+    # 8. Determine category based on final temperature (not base)
     final_category = get_category_from_actual_temp(actual_temp, base_temp)
 
     # 8. Build description

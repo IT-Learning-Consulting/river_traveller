@@ -309,10 +309,11 @@ class NotificationService:
         )
 
         # Generation Rolls section
+        weather_roll = weather_data.get("weather_roll", 0)
         temp_roll = weather_data.get("temp_roll")
         base_temp = weather_data.get("base_temp")
-        generation_text = f"**Weather Type:** d100 = 38 → {weather_name}"
-        if temp_roll and base_temp:
+        generation_text = f"**Weather Type:** d100 = {weather_roll} → {weather_name}"
+        if temp_roll is not None and base_temp is not None:
             temp_modifier = actual_temp - base_temp
             generation_text += f"\n**Temperature:** d100 = {temp_roll} → {temp_modifier:+d}°C (no wind chill)"
 
@@ -329,7 +330,8 @@ class NotificationService:
                 time_display = wind_data.get("time", "").title()
                 strength = wind_data.get("strength", "calm")
                 direction = wind_data.get("direction", "")
-                changed = wind_data.get("changed", False)
+                strength_changed = wind_data.get("strength_changed", False)
+                direction_changed = wind_data.get("direction_changed", False)
                 strength_roll = wind_data.get("strength_roll")
                 direction_roll = wind_data.get("direction_roll")
 
@@ -338,22 +340,26 @@ class NotificationService:
 
                 # Format the strength roll part
                 if strength_roll is not None:
-                    if changed:
-                        strength_part = f"Change d10={strength_roll}"
+                    if strength_changed:
+                        strength_part = f"Str Change d10={strength_roll} → {strength_display}"
                     else:
-                        strength_part = f"Change d10={strength_roll} (no change: {strength_display})"
+                        strength_part = f"Str Change d10={strength_roll} (no change)"
                 else:
                     # First period (Dawn in new day) - initial roll
-                    strength_part = f"Str d10=2 ({strength_display})"
+                    strength_part = f"Str: {strength_display}"
 
                 # Format the direction roll part
                 if direction_roll is not None:
-                    direction_part = f"Dir d10={direction_roll} ({direction_display})"
+                    if direction_changed:
+                        direction_part = f"Dir Change d10={direction_roll} → {direction_display}"
+                    else:
+                        direction_part = f"Dir Change d10={direction_roll} (no change)"
                 else:
-                    # No direction change this period
-                    direction_part = f"({direction_display})"
+                    # No direction change check this period (Dawn)
+                    direction_part = f"Dir: {direction_display}"
 
-                # Combine: • Dawn: Str d10=2 (Calm), Dir d10=1 (Tailwind)
+                # Combine: • Dawn: Str: Calm, Dir: Tailwind
+                # or: • Midday: Str Change d10=1 → Light, Dir Change d10=5 (no change)
                 wind_rolls_lines.append(f"• **{time_display}:** {strength_part}, {direction_part}")
 
             embed.add_field(
@@ -477,19 +483,19 @@ class NotificationService:
             time_display = wind_data.get("time", "").title()
             strength = wind_data.get("strength", "calm")
             direction = wind_data.get("direction", "")
-            changed = wind_data.get("changed", False)
+            strength_changed = wind_data.get("strength_changed", False)
+            direction_changed = wind_data.get("direction_changed", False)
 
             # Format strength and direction
             strength_display = strength.replace("_", " ").title()
             direction_display = direction.replace("_", " ").title()
 
             # Mock dice roll display (d10 for change check)
-            # In a full implementation, we'd store actual rolls
-            change_indicator = "Change d10=8 (no change" if not changed else "Str d10=2 (Calm"
-            if changed:
-                change_text = f"{change_indicator})"
+            # Note: This method is legacy and not currently used
+            if strength_changed or direction_changed:
+                change_text = f"Changed to {strength_display} {direction_display}"
             else:
-                change_text = f"{change_indicator}: {strength_display} {direction_display})"
+                change_text = f"No change: {strength_display} {direction_display}"
 
             lines.append(f"• **{time_display}:** {change_text}")
 

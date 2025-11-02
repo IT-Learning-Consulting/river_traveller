@@ -3,7 +3,13 @@
     "allow": [
       "Bash(sqlite3:*)",
       "Bash(python -m pytest:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(tasklist:*)",
+      "Bash(findstr:*)",
+      "Bash(wmic process where \"name=''python.exe''\" get ProcessId,CommandLine)",
+      "Bash(powershell.exe:*)",
+      "Bash(taskkill:*)",
+      "Bash(cmd.exe /c \"taskkill /F /PID 21072 & taskkill /F /PID 39104 & taskkill /F /PID 57904\")"
     ],
     "deny": [],
     "ask": []

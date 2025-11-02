@@ -101,9 +101,16 @@ class DailyWeatherService:
             >>> weather["day"]
             1
         """
-        current_day = journey["current_day"]
-        season = journey["season"]
-        province = journey["province"]
+        # Handle both dict and JourneyState dataclass
+        if isinstance(journey, dict):
+            current_day = journey["current_day"]
+            season = journey["season"]
+            province = journey["province"]
+        else:
+            # Assume it's a JourneyState dataclass
+            current_day = journey.current_day
+            season = journey.season
+            province = journey.province
 
         # Check if weather already exists for current day
         current_weather = self.storage.get_daily_weather(guild_id, current_day)
@@ -175,7 +182,7 @@ class DailyWeatherService:
         days_since_cf, days_since_hw = self.storage.get_cooldown_status(guild_id)
 
         # Roll weather type
-        weather_type = roll_weather_condition(season)
+        weather_type, weather_roll = roll_weather_condition(season)
         weather_effects_data = get_weather_effects(weather_type)
 
         # Roll temperature with special events (8 parameters → 8 returns)
@@ -244,7 +251,7 @@ class DailyWeatherService:
             "province": province,
             "wind_timeline": normalized_wind_timeline,
             "weather_type": weather_type,
-            "weather_roll": 0,
+            "weather_roll": weather_roll,
             "weather_effects": weather_effects_data["effects"],
             "actual_temp": actual_temp,
             "perceived_temp": perceived_temp,
@@ -266,6 +273,7 @@ class DailyWeatherService:
             "province": province,
             "wind_timeline": wind_timeline,
             "weather_type": weather_type,
+            "weather_roll": weather_roll,  # Add the weather type dice roll
             "weather_effects": weather_effects_data["effects"],
             "actual_temp": actual_temp,
             "perceived_temp": perceived_temp,
@@ -304,50 +312,8 @@ class DailyWeatherService:
         if not weather_db:
             return None
 
-        # Reconstruct display-ready data
-        actual_temp = weather_db["temperature_actual"]
-        wind_strengths = [w["strength"] for w in weather_db["wind_timeline"]]
-
-        # Defensive: handle empty wind_timeline
-        if not wind_strengths:
-            most_common_wind = "Calm"
-        else:
-            most_common_wind = max(set(wind_strengths), key=wind_strengths.count)
-
-        perceived_temp = apply_wind_chill(actual_temp, most_common_wind)
-        base_temp = get_province_base_temperature(weather_db["province"], weather_db["season"])
-        weather_effects_data = get_weather_effects(weather_db["weather_type"])
-
-        # Reconstruct temperature description
-        temp_category = weather_db["temperature_category"]
-        temp_descriptions = {
-            "very_cold": "Bitterly cold",
-            "cold": "Cold",
-            "cool": "Cool",
-            "mild": "Mild",
-            "warm": "Warm",
-            "hot": "Hot",
-            "very_hot": "Sweltering heat",
-        }
-        temp_description = temp_descriptions.get(temp_category, "Mild")
-
-        return {
-            "day": day,
-            "season": weather_db["season"],
-            "province": weather_db["province"],
-            "wind_timeline": weather_db["wind_timeline"],
-            "weather_type": weather_db["weather_type"],
-            "weather_effects": weather_effects_data["effects"],
-            "actual_temp": actual_temp,
-            "perceived_temp": perceived_temp,
-            "base_temp": base_temp,
-            "temp_category": temp_category,
-            "temp_description": temp_description,
-            "most_common_wind": most_common_wind,
-            "cold_front_days": weather_db["cold_front_days_remaining"],
-            "heat_wave_days": weather_db["heat_wave_days_remaining"],
-            "continuity_note": None,  # Historical views don't show continuity
-        }
+        # Use reconstruct_weather_data to handle both dict and dataclass
+        return self.reconstruct_weather_data(weather_db, day)
 
     def generate_stage_weather(
         self, guild_id: str, journey: Dict[str, Any], stage_duration: int
@@ -440,7 +406,7 @@ class DailyWeatherService:
         base temperature, weather effects, temperature description).
 
         Args:
-            weather_db: Raw weather data from database
+            weather_db: Raw weather data from database (can be dict or DailyWeather dataclass)
             day: Day number for the weather data
 
         Returns:
@@ -453,8 +419,44 @@ class DailyWeatherService:
             >>> display_data = service.reconstruct_weather_data(raw_data, 5)
             >>> print(display_data["perceived_temp"])
         """
-        actual_temp = weather_db["temperature_actual"]
-        wind_strengths = [w["strength"] for w in weather_db["wind_timeline"]]
+        # Handle both dict and DailyWeather dataclass
+        if isinstance(weather_db, dict):
+            actual_temp = weather_db["temperature_actual"]
+            wind_timeline = weather_db["wind_timeline"]
+            season = weather_db["season"]
+            province = weather_db["province"]
+            weather_type = weather_db["weather_type"]
+            temp_category = weather_db["temperature_category"]
+            cold_front_days = weather_db["cold_front_days_remaining"]
+            heat_wave_days = weather_db["heat_wave_days_remaining"]
+        else:
+            # Assume it's a DailyWeather dataclass
+            actual_temp = weather_db.temperature.actual
+            # Convert WindTimeline dataclass to list of dicts
+            if hasattr(weather_db.wind_timeline, 'dawn'):
+                # It's a WindTimeline dataclass with dawn/midday/dusk/midnight attributes
+                wind_timeline = []
+                for time_name in ['dawn', 'midday', 'dusk', 'midnight']:
+                    wind_cond = getattr(weather_db.wind_timeline, time_name)
+                    wind_timeline.append({
+                        "time": time_name,
+                        "strength": wind_cond.strength,
+                        "direction": wind_cond.direction,
+                        "rolls": wind_cond.rolls,
+                        "modifier": wind_cond.modifier,
+                        "notes": wind_cond.notes,
+                    })
+            else:
+                # It's already a list
+                wind_timeline = weather_db.wind_timeline
+            season = weather_db.season
+            province = weather_db.province
+            weather_type = weather_db.weather_type
+            temp_category = weather_db.temperature.category
+            cold_front_days = weather_db.special_event.days_remaining if weather_db.special_event and weather_db.special_event.event_type == "cold_front" else 0
+            heat_wave_days = weather_db.special_event.days_remaining if weather_db.special_event and weather_db.special_event.event_type == "heat_wave" else 0
+
+        wind_strengths = [w["strength"] if isinstance(w, dict) else w.strength for w in wind_timeline]
 
         # Defensive: handle empty wind_timeline
         if not wind_strengths:
@@ -464,12 +466,11 @@ class DailyWeatherService:
 
         perceived_temp = apply_wind_chill(actual_temp, most_common_wind)
 
-        base_temp = get_province_base_temperature(weather_db["province"], weather_db["season"])
+        base_temp = get_province_base_temperature(province, season)
 
-        weather_effects_data = get_weather_effects(weather_db["weather_type"])
+        weather_effects_data = get_weather_effects(weather_type)
 
         # Reconstruct temperature description
-        temp_category = weather_db["temperature_category"]
         temp_descriptions = {
             "very_cold": "Bitterly cold",
             "cold": "Cold",
@@ -483,10 +484,10 @@ class DailyWeatherService:
 
         return {
             "day": day,
-            "season": weather_db["season"],
-            "province": weather_db["province"],
-            "wind_timeline": weather_db["wind_timeline"],
-            "weather_type": weather_db["weather_type"],
+            "season": season,
+            "province": province,
+            "wind_timeline": wind_timeline,
+            "weather_type": weather_type,
             "weather_effects": weather_effects_data["effects"],
             "actual_temp": actual_temp,
             "perceived_temp": perceived_temp,
@@ -494,7 +495,7 @@ class DailyWeatherService:
             "temp_category": temp_category,
             "temp_description": temp_description,
             "most_common_wind": most_common_wind,
-            "cold_front_days": weather_db["cold_front_days_remaining"],
-            "heat_wave_days": weather_db["heat_wave_days_remaining"],
+            "cold_front_days": cold_front_days,
+            "heat_wave_days": heat_wave_days,
             "continuity_note": None,  # Historical views don't show continuity
         }

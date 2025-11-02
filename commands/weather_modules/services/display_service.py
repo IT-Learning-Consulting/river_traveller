@@ -435,7 +435,8 @@ class DisplayService:
             time_display = wind_data.get("time", "").title()
             strength = wind_data.get("strength", "calm")
             direction = wind_data.get("direction", "")
-            changed = wind_data.get("changed", False)
+            strength_changed = wind_data.get("strength_changed", False)
+            direction_changed = wind_data.get("direction_changed", False)
 
             # Format strength and direction for display
             strength_display = strength.replace("_", " ").title()
@@ -447,8 +448,8 @@ class DisplayService:
             else:
                 line = f"**{time_display}:** {strength_display} {direction_display}"
 
-            # Add change indicator
-            if changed:
+            # Add change indicator if either strength or direction changed
+            if strength_changed or direction_changed:
                 line += " ⚡"
 
             lines.append(line)

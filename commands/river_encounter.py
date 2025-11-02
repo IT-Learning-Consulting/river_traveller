@@ -36,7 +36,7 @@ Permissions:
 """
 
 import discord
-from typing import Literal, Optional, Union
+from typing import Literal, Optional
 from discord import app_commands
 from discord.ext import commands
 from utils.encounter_mechanics import (
@@ -50,7 +50,12 @@ from utils.encounter_mechanics import (
 )
 from commands.permissions import is_gm
 from commands.constants import CHANNEL_GM_NOTIFICATIONS
-from commands.error_handlers import handle_discord_error
+from commands.enhanced_error_handlers import (
+    error_logger,
+    handle_bot_exception,
+    handle_generic_error,
+)
+from commands.exceptions import PermissionDeniedException
 from commands.services.command_logger import CommandLogger
 from commands.services.encounter_service import EncounterService
 
@@ -84,9 +89,7 @@ EMOJI_CARGO_LOSS = "💰"
 
 
 def format_player_flavor_embed(
-    encounter_type: Literal[
-        "positive", "coincidental", "uneventful", "harmful", "accident"
-    ],
+    encounter_type: Literal["positive", "coincidental", "uneventful", "harmful", "accident"],
     flavor_text: str,
     stage: Optional[str] = None,
 ) -> discord.Embed:
@@ -127,9 +130,7 @@ def format_player_flavor_embed(
     return embed
 
 
-def format_gm_simple_embed(
-    encounter_data: dict, stage: Optional[str] = None
-) -> discord.Embed:
+def format_gm_simple_embed(encounter_data: dict, stage: Optional[str] = None) -> discord.Embed:
     """
     Format GM notification for simple encounters.
 
@@ -177,9 +178,7 @@ def format_gm_simple_embed(
     # Add effects if any
     effects = encounter_data.get("effects", [])
     if effects:
-        embed.add_field(
-            name="Effects", value=format_effects_list(effects), inline=False
-        )
+        embed.add_field(name="Effects", value=format_effects_list(effects), inline=False)
 
     # Add mechanics if any
     mechanics = encounter_data.get("mechanics")
@@ -191,20 +190,18 @@ def format_gm_simple_embed(
         )
 
     # Add roll information
-    roll_info = (
-        f"{EMOJI_DICE} Encounter Type Roll: {encounter_data['type_roll']} ({type_name})"
-    )
+    roll_info = f"{EMOJI_DICE} Encounter Type Roll: {encounter_data['type_roll']} ({type_name})"
     if encounter_data.get("detail_roll"):
-        roll_info += f"\n{EMOJI_TARGET} Detail Roll: {encounter_data['detail_roll']} ({encounter_data.get('title', 'Unknown')})"
+        roll_info += (
+            f"\n{EMOJI_TARGET} Detail Roll: {encounter_data['detail_roll']} ({encounter_data.get('title', 'Unknown')})"
+        )
 
     embed.add_field(name="Rolls", value=roll_info, inline=False)
 
     return embed
 
 
-def format_gm_accident_embed(
-    encounter_data: dict, stage: Optional[str] = None
-) -> discord.Embed:
+def format_gm_accident_embed(encounter_data: dict, stage: Optional[str] = None) -> discord.Embed:
     """
     Format GM notification for accident encounters with complex mechanics.
 
@@ -257,9 +254,7 @@ def format_gm_accident_embed(
     # Primary test
     if "primary_test" in mechanics:
         primary_test = mechanics["primary_test"]
-        tests_text += (
-            f"{EMOJI_TEST_PRIMARY} **{format_test_requirement(primary_test)}**\n"
-        )
+        tests_text += f"{EMOJI_TEST_PRIMARY} **{format_test_requirement(primary_test)}**\n"
 
         # Primary failure
         if "primary_failure" in mechanics:
@@ -274,9 +269,7 @@ def format_gm_accident_embed(
     # Secondary test
     if "secondary_test" in mechanics:
         secondary_test = mechanics["secondary_test"]
-        tests_text += (
-            f"{EMOJI_TEST_SECONDARY} **{format_test_requirement(secondary_test)}**\n"
-        )
+        tests_text += f"{EMOJI_TEST_SECONDARY} **{format_test_requirement(secondary_test)}**\n"
 
         if "trigger" in secondary_test:
             tests_text += f"   • Trigger: {secondary_test['trigger']}\n"
@@ -290,17 +283,13 @@ def format_gm_accident_embed(
     # Single test for simpler accidents
     if "repair_test" in mechanics:
         repair = mechanics["repair_test"]
-        tests_text += (
-            f"{EMOJI_TEST_REPAIR} **Repair: {format_test_requirement(repair)}**\n"
-        )
+        tests_text += f"{EMOJI_TEST_REPAIR} **Repair: {format_test_requirement(repair)}**\n"
         if "time" in repair:
             tests_text += f"   • Time required: {repair['time']}\n"
 
     if "test_each_round" in mechanics:
         test = mechanics["test_each_round"]
-        tests_text += (
-            f"{EMOJI_TEST_EACH_ROUND} **Each Round: {format_test_requirement(test)}**\n"
-        )
+        tests_text += f"{EMOJI_TEST_EACH_ROUND} **Each Round: {format_test_requirement(test)}**\n"
 
     if "extinguish_test" in mechanics:
         test = mechanics["extinguish_test"]
@@ -312,9 +301,7 @@ def format_gm_accident_embed(
 
     if "rescue_test" in mechanics:
         test = mechanics["rescue_test"]
-        tests_text += (
-            f"{EMOJI_TEST_RESCUE} **Rescue: {format_test_requirement(test)}**\n"
-        )
+        tests_text += f"{EMOJI_TEST_RESCUE} **Rescue: {format_test_requirement(test)}**\n"
 
     if tests_text:
         embed.add_field(
@@ -367,9 +354,7 @@ def format_gm_accident_embed(
         hazards = mechanics["additional_hazards"]
         hazard_text = hazards.get("risk", "")
         if "effects" in hazards:
-            hazard_text += "\n" + "\n".join(
-                f"• {effect}" for effect in hazards["effects"]
-            )
+            hazard_text += "\n" + "\n".join(f"• {effect}" for effect in hazards["effects"])
 
         embed.add_field(
             name=f"{EMOJI_ADDITIONAL_HAZARDS} Additional Hazards",
@@ -378,7 +363,9 @@ def format_gm_accident_embed(
         )
 
     # Add roll information
-    roll_info = f"{EMOJI_DICE} Accident Roll: {encounter_data['detail_roll']} ({encounter_data.get('title', 'Unknown')})"
+    roll_info = (
+        f"{EMOJI_DICE} Accident Roll: {encounter_data['detail_roll']} ({encounter_data.get('title', 'Unknown')})"
+    )
 
     if "cargo_loss" in encounter_data:
         cargo = encounter_data["cargo_loss"]
@@ -389,9 +376,7 @@ def format_gm_accident_embed(
     return embed
 
 
-async def send_gm_notification(
-    guild: discord.Guild, encounter_data: dict, stage: Optional[str] = None
-) -> bool:
+async def send_gm_notification(guild: discord.Guild, encounter_data: dict, stage: Optional[str] = None) -> bool:
     """
     Send full encounter details to GM notifications channel.
 
@@ -422,6 +407,15 @@ async def send_gm_notification(
     channel = discord.utils.get(guild.text_channels, name=CHANNEL_GM_NOTIFICATIONS)
 
     if not channel:
+        # Log warning but don't fail - GM notifications are optional
+        error_logger.log_warning(
+            message=f"GM notification channel '{CHANNEL_GM_NOTIFICATIONS}' not found",
+            command_name="river-encounter",
+            context_data={
+                "guild_id": guild.id,
+                "guild_name": guild.name,
+            },
+        )
         return False
 
     # Format appropriate embed based on encounter type
@@ -434,11 +428,30 @@ async def send_gm_notification(
     try:
         await channel.send(embed=embed)
         return True
-    except discord.errors.Forbidden:
+    except discord.errors.Forbidden as e:
         # Bot doesn't have permission to send in that channel
+        error_logger.log_warning(
+            message=f"Missing permissions to send to GM notifications channel: {e}",
+            command_name="river-encounter",
+            context_data={
+                "channel_id": channel.id,
+                "channel_name": channel.name,
+                "guild_id": guild.id,
+                "error_type": type(e).__name__,
+            },
+        )
         return False
-    except Exception:  # noqa: BLE001
-        # Other error, silently fail (broad exception intentional for resilience)
+    except Exception as e:  # noqa: BLE001
+        # Other error, log but don't fail (broad exception intentional for resilience)
+        error_logger.log_error(
+            error=e,
+            command_name="river-encounter",
+            guild_id=str(guild.id),
+            context_data={
+                "channel_id": channel.id if channel else None,
+                "error_type": type(e).__name__,
+            },
+        )
         return False
 
 
@@ -470,9 +483,7 @@ def setup_river_encounter(bot: commands.Bot):
     async def river_encounter_slash(
         interaction: discord.Interaction,
         stage: Optional[str] = None,
-        encounter_type: Optional[
-            Literal["positive", "coincidental", "uneventful", "harmful", "accident"]
-        ] = None,
+        encounter_type: Optional[Literal["positive", "coincidental", "uneventful", "harmful", "accident"]] = None,
     ) -> None:
         """
         Slash command for river encounters.
@@ -491,10 +502,13 @@ def setup_river_encounter(bot: commands.Bot):
             if encounter_type:
                 # Verify user has GM permissions
                 if not interaction.guild or not is_gm(interaction.user):
-                    await interaction.response.send_message(
-                        "❌ Only the server owner or users with the GM role can override encounter types.",
-                        ephemeral=True,
+                    error = PermissionDeniedException(
+                        command_name="river-encounter",
+                        required_permission="GM role or server owner",
+                        user_id=str(interaction.user.id),
+                        user_message="❌ Only the server owner or users with the GM role can override encounter types.",
                     )
+                    await handle_bot_exception(interaction, error, is_slash=True)
                     return
 
             # Generate encounter (with optional type override)
@@ -502,9 +516,7 @@ def setup_river_encounter(bot: commands.Bot):
             encounter_data = service.generate_encounter(encounter_type=encounter_type)
 
             # Format player flavor embed (cryptic)
-            player_embed = format_player_flavor_embed(
-                encounter_data["type"], encounter_data["flavor_text"], stage
-            )
+            player_embed = format_player_flavor_embed(encounter_data["type"], encounter_data["flavor_text"], stage)
 
             # Send to player (public)
             await interaction.response.send_message(embed=player_embed)
@@ -514,7 +526,7 @@ def setup_river_encounter(bot: commands.Bot):
                 await send_gm_notification(interaction.guild, encounter_data, stage)
                 # Send command log
                 try:
-                    logger = CommandLogger()
+                    logger = CommandLogger(bot=interaction.client)
                     fields = {"Actual Type": encounter_data["type"].title()}
                     if stage:
                         fields["Stage"] = stage
@@ -536,17 +548,31 @@ def setup_river_encounter(bot: commands.Bot):
                         color=discord.Color.teal(),
                         is_slash=True,
                     )
-                except (KeyError, AttributeError):
-                    # Silently fail logging if data is incomplete
-                    pass
+                except (KeyError, AttributeError) as e:
+                    # Log warning but don't fail the command
+                    error_logger.log_warning(
+                        message=f"Failed to log river-encounter command: {e}",
+                        command_name="river-encounter",
+                        context_data={
+                            "user_id": str(interaction.user.id),
+                            "error_type": type(e).__name__,
+                        },
+                    )
 
-        except (discord.Forbidden, discord.HTTPException):
+        except (discord.Forbidden, discord.HTTPException) as e:
             # Permission errors - encounter already sent, just log the issue
-            pass
+            error_logger.log_warning(
+                message=f"Failed to send GM notification or log: {e}",
+                command_name="river-encounter",
+                context_data={
+                    "user_id": str(interaction.user.id),
+                    "error_type": type(e).__name__,
+                },
+            )
 
         except Exception as e:  # noqa: BLE001
             # Generic exception - inform user (broad exception intentional for user safety)
-            await handle_discord_error(interaction, e, is_slash=True)
+            await handle_generic_error(interaction, e, is_slash=True, command_name="river-encounter")
 
     @bot.command(name="river-encounter")
     async def river_encounter_prefix(
@@ -575,9 +601,7 @@ def setup_river_encounter(bot: commands.Bot):
         """
         # Validate encounter type if provided
         service = EncounterService()
-        if encounter_type and not service.is_valid_encounter_type(
-            encounter_type.lower()
-        ):
+        if encounter_type and not service.is_valid_encounter_type(encounter_type.lower()):
             # If first arg isn't a valid type, treat it as part of the stage
             if stage:
                 stage = f"{encounter_type} {stage}"
@@ -589,18 +613,20 @@ def setup_river_encounter(bot: commands.Bot):
 
             # Check if user is trying to override encounter type
             if ctx.guild and not is_gm(ctx.author):
-                await ctx.send(
-                    "❌ Only the server owner or users with the GM role can override encounter types."
+                error = PermissionDeniedException(
+                    command_name="river-encounter",
+                    required_permission="GM role or server owner",
+                    user_id=str(ctx.author.id),
+                    user_message="❌ Only the server owner or users with the GM role can override encounter types.",
                 )
+                await handle_bot_exception(ctx, error, is_slash=False)
                 return
 
         # Generate encounter (with optional type override)
         encounter_data = service.generate_encounter(encounter_type=encounter_type)
 
         # Format player flavor embed (cryptic)
-        player_embed = format_player_flavor_embed(
-            encounter_data["type"], encounter_data["flavor_text"], stage
-        )
+        player_embed = format_player_flavor_embed(encounter_data["type"], encounter_data["flavor_text"], stage)
 
         # Send to player (public)
         await ctx.send(embed=player_embed)
@@ -610,7 +636,7 @@ def setup_river_encounter(bot: commands.Bot):
             await send_gm_notification(ctx.guild, encounter_data, stage)
             # Send command log
             try:
-                logger = CommandLogger()
+                logger = CommandLogger(bot=ctx.bot)
                 fields = {"Actual Type": encounter_data["type"].title()}
                 if stage:
                     fields["Stage"] = stage
@@ -632,6 +658,13 @@ def setup_river_encounter(bot: commands.Bot):
                     color=discord.Color.teal(),
                     is_slash=False,
                 )
-            except (KeyError, AttributeError):
-                # Silently fail logging if data is incomplete
-                pass
+            except (KeyError, AttributeError) as e:
+                # Log warning but don't fail the command
+                error_logger.log_warning(
+                    message=f"Failed to log river-encounter command: {e}",
+                    command_name="river-encounter",
+                    context_data={
+                        "user_id": str(ctx.author.id),
+                        "error_type": type(e).__name__,
+                    },
+                )

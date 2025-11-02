@@ -36,7 +36,15 @@ from utils.modifier_calculator import (
     format_weather_impact_for_embed,
 )
 from commands.constants import DEFAULT_TIME
-from commands.error_handlers import handle_discord_error, handle_value_error
+from commands.error_handlers import handle_discord_error
+
+# Enhanced error handling
+from commands.exceptions import CharacterNotFoundException
+from commands.enhanced_error_handlers import (
+    handle_validation_error,
+    handle_bot_exception,
+    handle_generic_error,
+)
 from commands.services.boat_handling_service import (
     BoatHandlingService,
     BoatHandlingResult,
@@ -124,19 +132,13 @@ def setup(bot: commands.Bot) -> None:
         time_of_day: str = DEFAULT_TIME,
     ):
         """Make a Boat Handling Test (Row or Sail) for a character."""
-        await _perform_boat_handling(
-            interaction, character, difficulty, time_of_day, is_slash=True
-        )
+        await _perform_boat_handling(interaction, character, difficulty, time_of_day, is_slash=True)
 
     # Prefix command
     @bot.command(name="boat-handling")
-    async def boat_handling_prefix(
-        ctx, character: str, difficulty: int = 0, time_of_day: str = DEFAULT_TIME
-    ):
+    async def boat_handling_prefix(ctx, character: str, difficulty: int = 0, time_of_day: str = DEFAULT_TIME):
         """Make a Boat Handling Test (Row or Sail) for a character."""
-        await _perform_boat_handling(
-            ctx, character, difficulty, time_of_day, is_slash=False
-        )
+        await _perform_boat_handling(ctx, character, difficulty, time_of_day, is_slash=False)
 
     async def _perform_boat_handling(
         context: Union[discord.Interaction, commands.Context],
@@ -194,9 +196,14 @@ def setup(bot: commands.Bot) -> None:
             # Check if character exists
             char = get_character(char_key)
             if char is None:
-                available = ", ".join(get_available_characters())
-                raise ValueError(
-                    f"Character '{character}' not found. Available: {available}"
+                available = get_available_characters()
+                raise CharacterNotFoundException(
+                    character_name=character,
+                    available_characters=available,
+                    user_message=(
+                        f"❌ Character **{character}** not found.\n\n"
+                        f"**Available characters:**\n{', '.join(available)}"
+                    ),
                 )
 
             # Perform boat handling test using service
@@ -225,7 +232,8 @@ def setup(bot: commands.Bot) -> None:
                 await context.send(embed=embed)
 
             # Send command log to boat-travelling-log channel
-            logger = CommandLogger()
+            bot = context.client if is_slash else context.bot
+            logger = CommandLogger(bot=bot)
             fields = {
                 "Character": character.title(),
                 "Difficulty": f"{original_difficulty:+d}",
@@ -254,12 +262,17 @@ def setup(bot: commands.Bot) -> None:
                 is_slash=is_slash,
             )
 
+        except CharacterNotFoundException as e:
+            # Handle character not found with custom exception
+            await handle_bot_exception(context, e, is_slash, "boat-handling")
+
         except ValueError as e:
-            await handle_value_error(
+            # Handle other validation errors
+            await handle_validation_error(
                 context,
                 e,
                 is_slash,
-                "Boat Handling",
+                "boat-handling",
                 usage_examples=[
                     "/boat-handling anara",
                     "/boat-handling emmerich -20",
@@ -267,8 +280,13 @@ def setup(bot: commands.Bot) -> None:
                 ],
             )
 
-        except (discord.DiscordException, KeyError, AttributeError) as e:
+        except discord.DiscordException as e:
+            # Handle Discord API errors
             await handle_discord_error(context, e, is_slash)
+
+        except Exception as e:  # noqa: BLE001
+            # Catch-all for unexpected errors
+            await handle_generic_error(context, e, is_slash, "boat-handling")
 
     def _build_boat_handling_embed(
         result: BoatHandlingResult,
@@ -319,35 +337,23 @@ def setup(bot: commands.Bot) -> None:
 
         # Always show difficulty if it's not default Challenging or if weather is active
         if original_difficulty != 0 or weather_mods:
-            diff_name = DIFFICULTY_TIERS.get(
-                original_difficulty, f"{original_difficulty:+d}"
-            )
+            diff_name = DIFFICULTY_TIERS.get(original_difficulty, f"{original_difficulty:+d}")
 
             # Show weather-modified difficulty if weather is active
             if weather_mods:
                 if result.weather_penalty != 0:
                     # Weather has a penalty - show base, modifier, and final
-                    modified_diff_name = DIFFICULTY_TIERS.get(
-                        result.final_difficulty, f"{result.final_difficulty:+d}"
-                    )
-                    skill_breakdown += (
-                        f"\n**Base Difficulty:** {diff_name} ({original_difficulty:+d})"
-                    )
-                    skill_breakdown += (
-                        f"\n**Weather Modifier:** {result.weather_penalty:+d}"
-                    )
+                    modified_diff_name = DIFFICULTY_TIERS.get(result.final_difficulty, f"{result.final_difficulty:+d}")
+                    skill_breakdown += f"\n**Base Difficulty:** {diff_name} ({original_difficulty:+d})"
+                    skill_breakdown += f"\n**Weather Modifier:** {result.weather_penalty:+d}"
                     skill_breakdown += f"\n**Final Difficulty:** {modified_diff_name} ({result.final_difficulty:+d})"
                 else:
                     # Weather is active but no penalty
-                    skill_breakdown += (
-                        f"\n**Difficulty:** {diff_name} ({original_difficulty:+d})"
-                    )
+                    skill_breakdown += f"\n**Difficulty:** {diff_name} ({original_difficulty:+d})"
                     skill_breakdown += "\n**Weather Modifier:** 0 (no penalty)"
             else:
                 # No weather, just show difficulty
-                skill_breakdown += (
-                    f"\n**Difficulty:** {diff_name} ({original_difficulty:+d})"
-                )
+                skill_breakdown += f"\n**Difficulty:** {diff_name} ({original_difficulty:+d})"
 
         embed.add_field(name="Skill Check", value=skill_breakdown, inline=True)
 
@@ -373,9 +379,7 @@ def setup(bot: commands.Bot) -> None:
         embed.add_field(name="Narrative", value=result.flavor_text, inline=False)
 
         # Mechanical consequences
-        embed.add_field(
-            name="Mechanical Effect", value=result.mechanics_text, inline=False
-        )
+        embed.add_field(name="Mechanical Effect", value=result.mechanics_text, inline=False)
 
         # Weather impact (if active)
         if weather_mods:

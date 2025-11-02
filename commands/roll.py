@@ -43,7 +43,7 @@ Channel Requirements:
     - boat-travelling-log: Command logging channel (optional)
 """
 
-from typing import Literal, Optional, Union
+from typing import Optional, Union
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -56,7 +56,13 @@ from commands.constants import (
     DEFAULT_DIFFICULTY,
     MAX_DICE_DISPLAY,
 )
-from commands.error_handlers import handle_discord_error, handle_value_error
+from commands.error_handlers import handle_discord_error
+
+# Enhanced error handling
+from commands.enhanced_error_handlers import (
+    handle_validation_error,
+    handle_generic_error,
+)
 
 
 def setup(bot: commands.Bot) -> None:
@@ -167,7 +173,8 @@ def setup(bot: commands.Bot) -> None:
                 await context.send(embed=embed)
 
             # Send command log using CommandLogger service
-            logger = CommandLogger()
+            bot = context.client if is_slash else context.bot
+            logger = CommandLogger(bot=bot)
             fields = {"Dice": dice}
             if target is not None:
                 fields["Target"] = str(target)
@@ -196,8 +203,8 @@ def setup(bot: commands.Bot) -> None:
             )
 
         except ValueError as e:
-            # Handle parsing errors
-            await handle_value_error(
+            # Handle parsing errors with enhanced validation handler
+            await handle_validation_error(
                 context,
                 e,
                 is_slash,
@@ -210,9 +217,13 @@ def setup(bot: commands.Bot) -> None:
                 ],
             )
 
-        except (discord.DiscordException, AttributeError) as e:  # noqa: BLE001
-            # Handle unexpected errors (broad exception intentional for user safety)
+        except discord.DiscordException as e:
+            # Handle Discord API errors
             await handle_discord_error(context, e, is_slash)
+
+        except Exception as e:  # noqa: BLE001
+            # Catch-all for unexpected errors with enhanced logging
+            await handle_generic_error(context, e, is_slash, "roll")
 
     def _build_roll_embed(
         result: RollResult,
@@ -248,9 +259,7 @@ def setup(bot: commands.Bot) -> None:
             results_str = ", ".join(str(r) for r in result.individual_rolls)
             embed.add_field(name="Results", value=f"[{results_str}]", inline=False)
         else:
-            embed.add_field(
-                name="Results", value=f"*{result.num_dice} dice rolled*", inline=False
-            )
+            embed.add_field(name="Results", value=f"*{result.num_dice} dice rolled*", inline=False)
 
         # Show dice modifier if present
         if result.dice_modifier != 0:
@@ -263,9 +272,7 @@ def setup(bot: commands.Bot) -> None:
         # WFRP-specific information
         if result.is_wfrp_test:
             # Show target and difficulty
-            difficulty_name = DIFFICULTY_NAMES.get(
-                result.difficulty, f"{result.difficulty:+d}"
-            )
+            difficulty_name = DIFFICULTY_NAMES.get(result.difficulty, f"{result.difficulty:+d}")
             embed.add_field(
                 name="WFRP Target",
                 value=f"Skill: {result.target} | Difficulty: {difficulty_name} ({result.difficulty:+d})\n**Final Target: {result.final_target}**",

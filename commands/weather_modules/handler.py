@@ -36,7 +36,7 @@ Command Flow:
     6. Command logged to command-log channel
 """
 
-from typing import Any, Dict, Optional, Union
+from typing import Optional, Union
 from dataclasses import asdict
 
 import discord
@@ -50,6 +50,18 @@ from commands.weather_modules.services.daily_weather_service import DailyWeather
 from commands.weather_modules.services.notification_service import NotificationService
 from commands.weather_modules.services.display_service import DisplayService
 from commands.services.command_logger import CommandLogger
+
+# Enhanced error handling
+from commands.exceptions import (
+    MissingParameterException,
+    WeatherGenerationException,
+)
+from commands.enhanced_error_handlers import (
+    handle_bot_exception,
+    error_logger,
+    send_warning_embed,
+    ErrorRecovery,
+)
 
 # Keep legacy imports for stage display (not yet refactored)
 from commands.weather_modules.stages import StageDisplayManager
@@ -296,26 +308,28 @@ class WeatherCommandHandler:
         try:
             journey = self.storage.get_journey_state(guild_id)
 
-            # Auto-start journey if needed
+            # Auto-start journey if needed with error recovery
             if not journey:
-                await self.display_service.send_info(
-                    context,
-                    INFO_AUTO_START_JOURNEY,
-                    is_slash=is_slash,
+                # Use error recovery utility
+                recovery = ErrorRecovery()
+                created = await recovery.auto_create_journey_if_missing(
+                    storage=self.storage, guild_id=guild_id, season=DEFAULT_SEASON, province=DEFAULT_PROVINCE
                 )
-                self.storage.start_journey(guild_id, DEFAULT_SEASON, DEFAULT_PROVINCE)
-                journey = self.storage.get_journey_state(guild_id)
 
-                # Send initial journey start notification
-                guild = context.guild if hasattr(context, "guild") else context.guild
-                if guild:
-                    await self.notification_service.send_journey_notification(
-                        guild,
-                        CHANNEL_GM_NOTIFICATIONS,
-                        "start",
-                        season=DEFAULT_SEASON,
-                        province=DEFAULT_PROVINCE,
-                    )
+                if created:
+                    await send_warning_embed(context, "⚠️ Journey Auto-Created", INFO_AUTO_START_JOURNEY, is_slash)
+                    journey = self.storage.get_journey_state(guild_id)
+
+                    # Send initial journey start notification
+                    guild = context.guild if hasattr(context, "guild") else context.guild
+                    if guild:
+                        await self.notification_service.send_journey_notification(
+                            guild,
+                            CHANNEL_GM_NOTIFICATIONS,
+                            "start",
+                            season=DEFAULT_SEASON,
+                            province=DEFAULT_PROVINCE,
+                        )
 
             # Generate weather data (convert journey to dict for compatibility)
             journey_dict = asdict(journey)
@@ -329,7 +343,14 @@ class WeatherCommandHandler:
             if guild:
                 await self.notification_service.send_weather_notification(guild, CHANNEL_GM_NOTIFICATIONS, weather_data)
 
+        except WeatherGenerationException as e:
+            # Handle weather generation specific errors
+            await handle_bot_exception(context, e, is_slash, "weather")
         except Exception as e:  # noqa: BLE001 - Broad exception handling for user feedback
+            # Log unexpected errors with context
+            error_logger.log_error(
+                error=e, command_name="weather_next", guild_id=guild_id, context_data={"action": "next"}
+            )
             await self.display_service.send_error(context, ERROR_GENERATING_WEATHER.format(error=str(e)), is_slash)
 
     async def _handle_next_stage(
@@ -373,20 +394,33 @@ class WeatherCommandHandler:
         try:
             journey = self.storage.get_journey_state(guild_id)
 
+            # Auto-start journey if needed with error recovery
             if not journey:
-                await self.display_service.send_error(
-                    context,
-                    ERROR_NO_JOURNEY,
-                    is_slash,
+                recovery = ErrorRecovery()
+                created = await recovery.auto_create_journey_if_missing(
+                    storage=self.storage, guild_id=guild_id, season=DEFAULT_SEASON, province=DEFAULT_PROVINCE
                 )
-                return
+
+                if created:
+                    await send_warning_embed(context, "⚠️ Journey Auto-Created", INFO_AUTO_START_JOURNEY, is_slash)
+                    journey = self.storage.get_journey_state(guild_id)
+
+                    # Send initial journey start notification
+                    guild = context.guild if hasattr(context, "guild") else context.guild
+                    if guild:
+                        await self.notification_service.send_journey_notification(
+                            guild,
+                            CHANNEL_GM_NOTIFICATIONS,
+                            "start",
+                            season=DEFAULT_SEASON,
+                            province=DEFAULT_PROVINCE,
+                        )
 
             # Get stage configuration
             stage_duration = journey.stage_duration
 
             # Generate weather for each day in the stage
             stage_weathers = []
-            start_day = journey.current_day
 
             for _ in range(stage_duration):
                 journey_dict = asdict(journey)
@@ -413,7 +447,16 @@ class WeatherCommandHandler:
                     stage_duration,
                 )
 
+        except WeatherGenerationException as e:
+            # Weather generation specific error
+            await handle_bot_exception(context, e, is_slash, "weather")
         except Exception as e:  # noqa: BLE001 - Broad exception handling for user feedback
+            error_logger.log_error(
+                error=e,
+                command_name="weather next-stage",
+                guild_id=guild_id,
+                context_data={"unexpected": True},
+            )
             await self.display_service.send_error(context, ERROR_GENERATING_STAGE.format(error=str(e)), is_slash)
 
     async def _handle_journey(
@@ -455,31 +498,50 @@ class WeatherCommandHandler:
         """
         try:
             if not season or not province:
-                await self.display_service.send_error(
-                    context,
-                    ERROR_MISSING_PARAMS,
-                    is_slash,
+                error = MissingParameterException(
+                    parameter_name="season and province",
+                    command_name="weather journey",
+                    user_message="❌ Both **season** and **province** are required to start a journey.\n\n"
+                    "Example: `/weather journey season:winter province:reikland`",
                 )
+                await handle_bot_exception(context, error, is_slash)
                 return
 
             # Check if journey already exists
             existing_journey = self.storage.get_journey_state(guild_id)
             if existing_journey:
-                await self.display_service.send_info(
-                    context,
-                    INFO_JOURNEY_REPLACE,
+                success = await send_warning_embed(
+                    context=context,
+                    title="⚠️ Journey Already Exists",
+                    description=INFO_JOURNEY_REPLACE,
                     is_slash=is_slash,
                 )
+                if not success:
+                    error_logger.log_warning(
+                        message="Failed to send journey replacement warning",
+                        command_name="weather journey",
+                        context_data={"guild_id": guild_id},
+                    )
 
             # Start new journey
             self.storage.start_journey(guild_id, season.lower(), province.lower())
 
+            # Retrieve the newly created journey state
+            journey = self.storage.get_journey_state(guild_id)
+
+            # Generate Day 1 weather automatically
+            journey_dict = asdict(journey)
+            weather_data = self._generate_daily_weather(guild_id, journey_dict)
+
+            # Send journey start info message
             await self.display_service.send_info(
                 context,
-                MSG_JOURNEY_START.format(season=season.title(), province=province.replace("_", " ").title())
-                + "\n\nUse `/weather next` to generate the first day's weather.",
+                f"🗺️ **New Journey Started!**\n\n**Season:** {season.title()}\n**Province:** {province.replace('_', ' ').title()}\n\n**Day 1 weather generated:**",
                 is_slash=is_slash,
             )
+
+            # Display Day 1 weather to player
+            await self.display_service.show_daily_weather(context, weather_data, is_slash)
 
             # Send journey start notification to GM channel
             guild = context.guild if hasattr(context, "guild") else context.guild
@@ -492,7 +554,19 @@ class WeatherCommandHandler:
                     province=province.lower(),
                 )
 
+                # Send Day 1 weather notification to GM channel
+                await self.notification_service.send_weather_notification(guild, CHANNEL_GM_NOTIFICATIONS, weather_data)
+
+        except MissingParameterException as e:
+            # Missing parameter error - already handled above, but catch here for completeness
+            await handle_bot_exception(context, e, is_slash)
         except Exception as e:  # noqa: BLE001 - Broad exception handling for user feedback
+            error_logger.log_error(
+                error=e,
+                command_name="weather journey",
+                guild_id=guild_id,
+                context_data={"season": season, "province": province},
+            )
             await self.display_service.send_error(context, ERROR_STARTING_JOURNEY.format(error=str(e)), is_slash)
 
     async def _handle_view(
@@ -504,27 +578,20 @@ class WeatherCommandHandler:
         _day: Optional[int],  # day parameter used in body but flagged - using local 'day' instead
         is_slash: bool,
     ):
-        """View specific day's weather."""
-        # Note: _day parameter is required for signature consistency but we use 'day' from journey state
-        day = _day  # Use the day parameter
-
+        """View specific day's weather (defaults to current day if not specified)."""
         try:
-            if day is None:
-                await self.display_service.send_error(
-                    context,
-                    "❌ Day number is required to view historical weather.\n" "Example: `/weather view day:1`",
-                    is_slash,
-                )
-                return
-
+            # Get journey state first to check if journey exists
             journey = self.storage.get_journey_state(guild_id)
             if not journey:
                 await self.display_service.send_error(
                     context,
-                    "❌ No journey in progress. Cannot view historical weather.",
+                    "❌ No journey in progress. Cannot view weather.",
                     is_slash,
                 )
                 return
+
+            # Default to current day if day parameter not provided
+            day = _day if _day is not None else journey.current_day
 
             # Get weather data for the specified day
             weather_db = self.storage.get_daily_weather(guild_id, day)
@@ -542,6 +609,11 @@ class WeatherCommandHandler:
 
             # Display with historical flag
             await self.display_service.show_daily_weather(context, weather_data, is_slash, is_historical=True)
+
+            # Send weather notification to GM channel
+            guild = context.guild if hasattr(context, "guild") else context.guild
+            if guild:
+                await self.notification_service.send_weather_notification(guild, CHANNEL_GM_NOTIFICATIONS, weather_data)
 
         except Exception as e:
             await self.display_service.send_error(context, f"Error viewing weather: {str(e)}", is_slash)
@@ -588,8 +660,7 @@ class WeatherCommandHandler:
                     guild,
                     "boat-travelling-notifications",
                     "end",
-                    season=season,
-                    province=province,
+                    final_day=total_days,
                 )
 
         except Exception as e:
@@ -672,8 +743,8 @@ class WeatherCommandHandler:
 
             # Get current settings
             journey = self.storage.get_journey_state(guild_id)
-            current_duration = journey.get("stage_duration", 3)
-            current_mode = journey.get("display_mode", "simple")
+            current_duration = journey.stage_duration if journey else 3
+            current_mode = journey.stage_display_mode if journey else "simple"
 
             await self.display_service.send_info(
                 context,

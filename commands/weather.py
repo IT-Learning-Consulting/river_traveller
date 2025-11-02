@@ -54,7 +54,14 @@ from discord.ext import commands
 
 from commands.weather_modules.handler import WeatherCommandHandler
 from commands.permissions import is_gm
-from commands.error_handlers import handle_discord_error, handle_value_error
+
+# Enhanced error handling
+from commands.exceptions import PermissionDeniedException
+from commands.enhanced_error_handlers import (
+    handle_validation_error,
+    handle_bot_exception,
+    handle_generic_error,
+)
 
 
 def setup(bot: commands.Bot) -> None:
@@ -141,7 +148,12 @@ def setup(bot: commands.Bot) -> None:
         # Check GM permissions for override action
         if action == "override":
             if not is_gm(interaction.user):
-                await interaction.response.send_message("❌ Only GMs can override weather.", ephemeral=True)
+                error = PermissionDeniedException(
+                    command_name="weather override",
+                    required_permission="GM role or server owner",
+                    user_message="🔒 Only GMs can override weather.\n\nThis command requires the **GM** role.",
+                )
+                await handle_bot_exception(interaction, error, is_slash=True, command_name="weather")
                 return
 
         await handler.handle_command(interaction, action, season, province, day, is_slash=True)
@@ -171,10 +183,26 @@ def setup(bot: commands.Bot) -> None:
             province: Province for journey/override
             day: Day number for view action
         """
+        # Handle special case for view command: !weather view 3
+        # The "3" gets captured in `season` parameter, but we need it in `day`
+        if action == "view" and season is not None and day is None:
+            try:
+                # Try to parse season as day number
+                day = int(season)
+                season = None
+            except (ValueError, TypeError):
+                # If it's not a number, leave parameters as-is
+                pass
+
         # Check GM permissions for override action
         if action == "override":
             if not is_gm(ctx.author):
-                await ctx.send("❌ Only GMs can override weather.")
+                error = PermissionDeniedException(
+                    command_name="weather override",
+                    required_permission="GM role or server owner",
+                    user_message="🔒 Only GMs can override weather.\n\nThis command requires the **GM** role.",
+                )
+                await handle_bot_exception(ctx, error, is_slash=False, command_name="weather")
                 return
 
         await handler.handle_command(ctx, action, season, province, day, is_slash=False)
@@ -214,17 +242,22 @@ def setup(bot: commands.Bot) -> None:
         """
         # Check GM permissions
         if not is_gm(interaction.user):
-            await interaction.response.send_message("❌ Only GMs can configure stage settings.", ephemeral=True)
+            error = PermissionDeniedException(
+                command_name="weather-stage-config",
+                required_permission="GM role or server owner",
+                user_message="🔒 Only GMs can configure stage settings.\n\nThis command requires the **GM** role.",
+            )
+            await handle_bot_exception(interaction, error, is_slash=True, command_name="weather-stage-config")
             return
 
         try:
             await handler.configure_stage(interaction, stage_duration, display_mode, is_slash=True)
         except ValueError as e:
             # Validation error - inform user
-            await handle_value_error(interaction, e, is_slash=True, command_name="Weather Stage Config")
+            await handle_validation_error(interaction, e, is_slash=True, command_name="weather-stage-config")
         except Exception as e:  # noqa: BLE001
-            # Generic error (broad exception intentional for user safety)
-            await handle_discord_error(interaction, e, is_slash=True)
+            # Generic error - enhanced logging
+            await handle_generic_error(interaction, e, is_slash=True, command_name="weather-stage-config")
 
     # Prefix command for stage configuration
     @bot.command(name="weather-stage-config")
