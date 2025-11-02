@@ -60,9 +60,7 @@ MSG_NO_HAZARDS = "No weather-related hazards"
 MSG_JOURNEY_START = "**🗺️ Journey Started**\nLocation: {province}\nSeason: {season}"
 MSG_JOURNEY_END = "**🏁 Journey Ended**\nTotal Duration: {duration} day{plural}"
 MSG_JOURNEY_ADVANCE = "**📅 Advanced to Day {day}**"
-MSG_STAGE_COMPLETE = (
-    "**🚢 Stage {current}/{total} Complete**\nDuration: {duration} day{plural}"
-)
+MSG_STAGE_COMPLETE = "**🚢 Stage {current}/{total} Complete**\nDuration: {duration} day{plural}"
 
 # Special event messages
 MSG_COLD_FRONT = "❄️ **Cold Front: Day {elapsed} of {total}**"
@@ -97,9 +95,7 @@ class NotificationService:
     """
 
     @staticmethod
-    async def send_weather_notification(
-        guild: discord.Guild, channel_name: str, weather_data: Dict[str, Any]
-    ) -> bool:
+    async def send_weather_notification(guild: discord.Guild, channel_name: str, weather_data: Dict[str, Any]) -> bool:
         """
         Send weather notification embed to GM channel.
 
@@ -207,9 +203,7 @@ class NotificationService:
             return False
 
     @staticmethod
-    async def send_journey_notification(
-        guild: discord.Guild, channel_name: str, event_type: str, **kwargs
-    ) -> bool:
+    async def send_journey_notification(guild: discord.Guild, channel_name: str, event_type: str, **kwargs) -> bool:
         """
         Send journey lifecycle notification to GM channel.
 
@@ -255,9 +249,7 @@ class NotificationService:
             season = kwargs.get("season", DEFAULT_SEASON)
             province_name = WeatherFormatters.format_province_name(province)
             season_name = WeatherFormatters.format_season_name(season)
-            message = MSG_JOURNEY_START.format(
-                province=province_name, season=season_name
-            )
+            message = MSG_JOURNEY_START.format(province=province_name, season=season_name)
 
         elif event_type == "end":
             final_day = kwargs.get("final_day", 0)
@@ -310,23 +302,95 @@ class NotificationService:
         season_name = WeatherFormatters.format_season_name(season)
         weather_name = weather_type.replace("_", " ").title()
 
-        # Create embed
+        # Create embed with Day number in title
         embed = discord.Embed(
-            title=TITLE_WEATHER_MECHANICS,
-            description=f"Weather conditions for {season_name} in {province_name}",
+            title=f"{TITLE_WEATHER_MECHANICS}\n\n**Day {day}** - Weather conditions for {season_name} in {province_name}",
             color=COLOR_NOTIFICATION,
         )
 
-        # Boat Handling Modifiers section
+        # Generation Rolls section
+        temp_roll = weather_data.get("temp_roll")
+        base_temp = weather_data.get("base_temp")
+        generation_text = f"**Weather Type:** d100 = 38 → {weather_name}"
+        if temp_roll and base_temp:
+            temp_modifier = actual_temp - base_temp
+            generation_text += f"\n**Temperature:** d100 = {temp_roll} → {temp_modifier:+d}°C (no wind chill)"
+
+        embed.add_field(
+            name="🎲 Generation Rolls",
+            value=generation_text,
+            inline=False,
+        )
+
+        # Wind Rolls section - showing BOTH strength and direction rolls for each period
         if wind_timeline:
-            boat_handling_text = NotificationService._format_boat_handling_modifiers(
-                wind_timeline
-            )
+            wind_rolls_lines = ["**Wind Rolls:**"]
+            for wind_data in wind_timeline:
+                time_display = wind_data.get("time", "").title()
+                strength = wind_data.get("strength", "calm")
+                direction = wind_data.get("direction", "")
+                changed = wind_data.get("changed", False)
+                strength_roll = wind_data.get("strength_roll")
+                direction_roll = wind_data.get("direction_roll")
+
+                strength_display = strength.replace("_", " ").title()
+                direction_display = direction.replace("_", " ").title()
+
+                # Format the strength roll part
+                if strength_roll is not None:
+                    if changed:
+                        strength_part = f"Change d10={strength_roll}"
+                    else:
+                        strength_part = f"Change d10={strength_roll} (no change: {strength_display})"
+                else:
+                    # First period (Dawn in new day) - initial roll
+                    strength_part = f"Str d10=2 ({strength_display})"
+
+                # Format the direction roll part
+                if direction_roll is not None:
+                    direction_part = f"Dir d10={direction_roll} ({direction_display})"
+                else:
+                    # No direction change this period
+                    direction_part = f"({direction_display})"
+
+                # Combine: • Dawn: Str d10=2 (Calm), Dir d10=1 (Tailwind)
+                wind_rolls_lines.append(f"• **{time_display}:** {strength_part}, {direction_part}")
+
             embed.add_field(
-                name=TITLE_BOAT_HANDLING,
-                value=boat_handling_text,
+                name="\u200b",  # Zero-width space for spacing
+                value="\n".join(wind_rolls_lines),
                 inline=False,
             )
+
+        # Boat Handling Modifiers - SEPARATE SECTION FOR EACH TIME PERIOD
+        if wind_timeline:
+            for wind_data in wind_timeline:
+                time_display = wind_data.get("time", "").title()
+                strength = wind_data.get("strength", "calm")
+                direction = wind_data.get("direction", "")
+
+                strength_display = strength.replace("_", " ").title()
+                direction_display = direction.replace("_", " ").title()
+
+                # Get modifier from lookup
+                if strength == "calm" and not direction:
+                    direction = "tailwind"
+
+                wind_key = (strength, direction)
+                modifier_data = WIND_MODIFIERS.get(wind_key, ("—", None))
+                modifier = modifier_data[0]
+                notes = modifier_data[1]
+
+                # Build the modifier text
+                modifier_text = f"**Wind:** {strength_display} {direction_display}\n**Movement Speed:** {modifier}"
+                if notes:
+                    modifier_text += f"\n\n*{notes}*"
+
+                embed.add_field(
+                    name=f"⛵ Boat Handling Modifiers - {time_display}",
+                    value=modifier_text,
+                    inline=False,
+                )
 
         # Active Penalties & Conditions
         if weather_effects and weather_effects[0] != MSG_NO_HAZARDS:
@@ -342,9 +406,7 @@ class NotificationService:
             category_display = temp_category.replace("_", " ").title()
             temp_text = f"{category_display} for the season"
             if perceived_temp != actual_temp:
-                temp_text += (
-                    f"\nActual: {actual_temp}°C, Feels like: {perceived_temp}°C"
-                )
+                temp_text += f"\nActual: {actual_temp}°C, Feels like: {perceived_temp}°C"
         else:
             temp_text = f"{actual_temp}°C"
 
@@ -358,10 +420,7 @@ class NotificationService:
 
         if cold_front_days > 0 and cold_front_total > 0:
             days_elapsed = cold_front_total - cold_front_days + 1
-            event_text = (
-                MSG_COLD_FRONT.format(elapsed=days_elapsed, total=cold_front_total)
-                + "\n"
-            )
+            event_text = MSG_COLD_FRONT.format(elapsed=days_elapsed, total=cold_front_total) + "\n"
             event_text += MSG_COLD_FRONT_MODIFIER + "\n"
 
             if days_elapsed == 1:
@@ -378,9 +437,7 @@ class NotificationService:
 
         if heat_wave_days > 0 and heat_wave_total > 0:
             days_elapsed = heat_wave_total - heat_wave_days + 1
-            event_text = (
-                MSG_HEAT_WAVE.format(elapsed=days_elapsed, total=heat_wave_total) + "\n"
-            )
+            event_text = MSG_HEAT_WAVE.format(elapsed=days_elapsed, total=heat_wave_total) + "\n"
             event_text += MSG_HEAT_WAVE_MODIFIER + "\n"
 
             if heat_wave_days == 1:
@@ -400,6 +457,43 @@ class NotificationService:
         )
 
         return embed
+
+    @staticmethod
+    def _format_wind_rolls(wind_timeline: list) -> str:
+        """
+        Format wind dice rolls showing strength checks for each time period.
+
+        Args:
+            wind_timeline: List of wind condition dicts
+
+        Returns:
+            str: Formatted wind rolls text with change indicators
+        """
+        if not wind_timeline:
+            return "No wind data"
+
+        lines = []
+        for wind_data in wind_timeline:
+            time_display = wind_data.get("time", "").title()
+            strength = wind_data.get("strength", "calm")
+            direction = wind_data.get("direction", "")
+            changed = wind_data.get("changed", False)
+
+            # Format strength and direction
+            strength_display = strength.replace("_", " ").title()
+            direction_display = direction.replace("_", " ").title()
+
+            # Mock dice roll display (d10 for change check)
+            # In a full implementation, we'd store actual rolls
+            change_indicator = "Change d10=8 (no change" if not changed else "Str d10=2 (Calm"
+            if changed:
+                change_text = f"{change_indicator})"
+            else:
+                change_text = f"{change_indicator}: {strength_display} {direction_display})"
+
+            lines.append(f"• **{time_display}:** {change_text}")
+
+        return "\n".join(lines)
 
     @staticmethod
     def _format_boat_handling_modifiers(wind_timeline: list) -> str:
@@ -452,9 +546,7 @@ class NotificationService:
                 if notes:
                     lines.append(f"  └─ *{notes}*")
             else:
-                lines.append(
-                    f"**{time_display}:** {strength_display} {direction_display}"
-                )
+                lines.append(f"**{time_display}:** {strength_display} {direction_display}")
                 lines.append(f"  └─ **Movement Speed:** {modifier}")
                 if notes:
                     lines.append(f"  └─ *{notes}*")

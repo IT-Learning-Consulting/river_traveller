@@ -25,6 +25,8 @@ Usage:
 """
 
 from typing import Dict, List, Optional, Any
+from datetime import datetime, timezone
+
 from db.weather_storage import WeatherStorage
 from db.weather_data import get_province_base_temperature
 from utils.weather_mechanics import (
@@ -58,9 +60,7 @@ class DailyWeatherService:
         """
         self.storage = storage
 
-    def generate_daily_weather(
-        self, guild_id: str, journey: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def generate_daily_weather(self, guild_id: str, journey: Dict[str, Any]) -> Dict[str, Any]:
         """
         Generate complete weather data for a single day.
 
@@ -125,7 +125,7 @@ class DailyWeatherService:
                     "rolls": previous_midnight.rolls,
                     "modifier": previous_midnight.modifier,
                     "notes": previous_midnight.notes,
-                    "time": "midnight"
+                    "time": "midnight",
                 }
                 wind_timeline = generate_daily_wind_with_previous(previous_midnight_dict)
                 continuity_note = (
@@ -143,11 +143,7 @@ class DailyWeatherService:
             continuity_note = None
 
         # Get previous weather for special event continuity
-        previous_weather = (
-            self.storage.get_daily_weather(guild_id, new_day - 1)
-            if new_day > 1
-            else None
-        )
+        previous_weather = self.storage.get_daily_weather(guild_id, new_day - 1) if new_day > 1 else None
 
         # Extract special event state from previous weather (DailyWeather dataclass)
         if previous_weather and previous_weather.special_event:
@@ -225,19 +221,41 @@ class DailyWeatherService:
         )
 
         # Save to database
+        temp_modifier = actual_temp - base_temp
+
+        # Normalize wind timeline for database storage
+        # Convert from list of {time: "Dawn", ...} to expected format
+        normalized_wind_timeline = []
+        for period in wind_timeline:
+            normalized_period = {
+                "time": period["time"].lower(),  # Convert "Dawn" to "dawn"
+                "strength": period["strength"],
+                "direction": period["direction"],
+                "rolls": [],  # Empty for now, not tracked in current implementation
+                "modifier": 0,  # Default modifier
+                "notes": "",  # Empty notes
+            }
+            normalized_wind_timeline.append(normalized_period)
+
         weather_db_data = {
+            "day_number": new_day,
+            "guild_id": guild_id,
             "season": season,
             "province": province,
-            "wind_timeline": wind_timeline,
+            "wind_timeline": normalized_wind_timeline,
             "weather_type": weather_type,
             "weather_roll": 0,
-            "temperature_actual": actual_temp,
-            "temperature_category": temp_category,
-            "temperature_roll": temp_roll,
+            "weather_effects": weather_effects_data["effects"],
+            "actual_temp": actual_temp,
+            "perceived_temp": perceived_temp,
+            "temp_category": temp_category,
+            "temp_modifier": temp_modifier,
+            "temp_roll": temp_roll,
             "cold_front_days_remaining": cold_front_remaining,
             "cold_front_total_duration": cold_front_total_new,
             "heat_wave_days_remaining": heat_wave_remaining,
             "heat_wave_total_duration": heat_wave_total_new,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
         }
         self.storage.save_daily_weather(guild_id, new_day, weather_db_data)
 
@@ -254,15 +272,14 @@ class DailyWeatherService:
             "base_temp": base_temp,
             "temp_category": temp_category,
             "temp_description": temp_description,
+            "temp_roll": temp_roll,  # Add the temperature dice roll
             "most_common_wind": most_common_wind,
             "cold_front_days": cold_front_remaining,
             "heat_wave_days": heat_wave_remaining,
             "continuity_note": continuity_note,
         }
 
-    def get_historical_weather(
-        self, guild_id: str, day: int
-    ) -> Optional[Dict[str, Any]]:
+    def get_historical_weather(self, guild_id: str, day: int) -> Optional[Dict[str, Any]]:
         """
         Retrieve historical weather data for a specific day.
 
@@ -298,9 +315,7 @@ class DailyWeatherService:
             most_common_wind = max(set(wind_strengths), key=wind_strengths.count)
 
         perceived_temp = apply_wind_chill(actual_temp, most_common_wind)
-        base_temp = get_province_base_temperature(
-            weather_db["province"], weather_db["season"]
-        )
+        base_temp = get_province_base_temperature(weather_db["province"], weather_db["season"])
         weather_effects_data = get_weather_effects(weather_db["weather_type"])
 
         # Reconstruct temperature description
@@ -449,9 +464,7 @@ class DailyWeatherService:
 
         perceived_temp = apply_wind_chill(actual_temp, most_common_wind)
 
-        base_temp = get_province_base_temperature(
-            weather_db["province"], weather_db["season"]
-        )
+        base_temp = get_province_base_temperature(weather_db["province"], weather_db["season"])
 
         weather_effects_data = get_weather_effects(weather_db["weather_type"])
 

@@ -37,6 +37,7 @@ Command Flow:
 """
 
 from typing import Any, Dict, Optional, Union
+from dataclasses import asdict
 
 import discord
 from discord.ext import commands
@@ -72,24 +73,18 @@ ERROR_GENERATING_STAGE = "Error generating stage: {error}"
 ERROR_STARTING_JOURNEY = "Error starting journey: {error}"
 ERROR_VIEWING_WEATHER = "Error viewing weather: {error}"
 ERROR_ENDING_JOURNEY = "Error ending journey: {error}"
-ERROR_NO_JOURNEY = (
-    "❌ No journey in progress. Use `/weather journey` to start a new journey first."
-)
+ERROR_NO_JOURNEY = "❌ No journey in progress. Use `/weather journey` to start a new journey first."
 ERROR_MISSING_PARAMS = "❌ Both season and province are required to start a journey.\nExample: `/weather journey season:summer province:reikland`"
 ERROR_NO_DAY_PARAM = "❌ Day parameter is required. Example: `/weather view day:2`"
 ERROR_DAY_NOT_FOUND = "❌ No weather data found for day {day}."
 ERROR_NOT_IMPLEMENTED = "❌ This feature is not yet implemented."
 ERROR_NO_STAGE_CONFIG_GUILD = "This command must be used in a server."
-ERROR_NO_STAGE_CONFIG_JOURNEY = (
-    "❌ No journey in progress. Start a journey first with `/weather journey`."
-)
+ERROR_NO_STAGE_CONFIG_JOURNEY = "❌ No journey in progress. Start a journey first with `/weather journey`."
 ERROR_INVALID_STAGE_DURATION = "❌ Stage duration must be between 1 and 10 days."
 
 # Info messages
 INFO_AUTO_START_JOURNEY = "⚠️ No journey in progress. Starting new journey with default settings (Summer in Reikland)."
-INFO_JOURNEY_REPLACE = (
-    "⚠️ A journey is already in progress. Ending previous journey and starting new one."
-)
+INFO_JOURNEY_REPLACE = "⚠️ A journey is already in progress. Ending previous journey and starting new one."
 INFO_JOURNEY_ENDED = "🏁 **Journey Ended**\n\nYour river journey has been concluded. All weather data has been saved.\nUse `/weather journey` to start a new journey."
 INFO_STAGE_CONFIG_UPDATED = "✅ Stage duration updated to {duration} days."
 
@@ -139,12 +134,15 @@ class WeatherCommandHandler:
         >>> await handler.handle_command(ctx, "next", None, None, None, False)
     """
 
-    def __init__(self) -> None:
+    def __init__(self, bot: commands.Bot) -> None:
         """
         Initialize the handler with required dependencies.
 
         Sets up storage access and instantiates all service objects.
         Journey and Weather services require storage dependency injection.
+
+        Args:
+            bot: Discord bot instance for command logging
         """
         self.storage = WeatherStorage()
         # Service layer - Journey and Weather services require storage
@@ -153,7 +151,7 @@ class WeatherCommandHandler:
         self.notification_service = NotificationService()
         self.display_service = DisplayService()
         # Command logger
-        self.logger = CommandLogger()
+        self.logger = CommandLogger(bot)
         # Legacy stage display (not yet refactored)
         self.stage_display = StageDisplayManager
 
@@ -252,17 +250,11 @@ class WeatherCommandHandler:
                     color=discord.Color.gold(),
                     is_slash=is_slash,
                 )
-            except (
-                Exception
-            ) as e:  # noqa: BLE001 - Broad exception handling for user feedback
+            except Exception as e:  # noqa: BLE001 - Broad exception handling for user feedback
                 # Catch any errors from action handlers and display to user
-                await self.display_service.send_error(
-                    context, ERROR_COMMAND_FAILED.format(error=str(e)), is_slash
-                )
+                await self.display_service.send_error(context, ERROR_COMMAND_FAILED.format(error=str(e)), is_slash)
         else:
-            await self.display_service.send_error(
-                context, ERROR_UNKNOWN_ACTION.format(action=action), is_slash
-            )
+            await self.display_service.send_error(context, ERROR_UNKNOWN_ACTION.format(action=action), is_slash)
 
     async def _handle_next(
         self,
@@ -325,27 +317,20 @@ class WeatherCommandHandler:
                         province=DEFAULT_PROVINCE,
                     )
 
-            # Generate weather data
-            weather_data = self._generate_daily_weather(guild_id, journey)
+            # Generate weather data (convert journey to dict for compatibility)
+            journey_dict = asdict(journey)
+            weather_data = self._generate_daily_weather(guild_id, journey_dict)
 
             # Display to player
-            await self.display_service.show_daily_weather(
-                context, weather_data, is_slash
-            )
+            await self.display_service.show_daily_weather(context, weather_data, is_slash)
 
             # Send mechanics notification to GM channel
             guild = context.guild if hasattr(context, "guild") else context.guild
             if guild:
-                await self.notification_service.send_weather_notification(
-                    guild, CHANNEL_GM_NOTIFICATIONS, weather_data
-                )
+                await self.notification_service.send_weather_notification(guild, CHANNEL_GM_NOTIFICATIONS, weather_data)
 
-        except (
-            Exception
-        ) as e:  # noqa: BLE001 - Broad exception handling for user feedback
-            await self.display_service.send_error(
-                context, ERROR_GENERATING_WEATHER.format(error=str(e)), is_slash
-            )
+        except Exception as e:  # noqa: BLE001 - Broad exception handling for user feedback
+            await self.display_service.send_error(context, ERROR_GENERATING_WEATHER.format(error=str(e)), is_slash)
 
     async def _handle_next_stage(
         self,
@@ -397,27 +382,24 @@ class WeatherCommandHandler:
                 return
 
             # Get stage configuration
-            stage_duration = journey.get("stage_duration", DEFAULT_STAGE_DURATION)
+            stage_duration = journey.stage_duration
 
             # Generate weather for each day in the stage
             stage_weathers = []
-            start_day = journey["current_day"]
+            start_day = journey.current_day
 
             for _ in range(stage_duration):
-                weather_data = self._generate_daily_weather(guild_id, journey)
+                journey_dict = asdict(journey)
+                weather_data = self._generate_daily_weather(guild_id, journey_dict)
                 stage_weathers.append((weather_data["day"], weather_data))
-                journey = self.storage.get_journey_state(
-                    guild_id
-                )  # Refresh after each day
+                journey = self.storage.get_journey_state(guild_id)  # Refresh after each day
 
             # Prepare stage data for display
-            stage_num = journey.get("stage_number", 1)
+            stage_num = journey.current_stage
             stage_weathers_list = [weather_data for _, weather_data in stage_weathers]
 
             # Display stage summary
-            await self.stage_display.show_stage_summary(
-                context, stage_num, stage_weathers_list, is_slash
-            )
+            await self.stage_display.show_stage_summary(context, stage_num, stage_weathers_list, is_slash)
 
             # Send stage notification to GM channel
             guild = context.guild if hasattr(context, "guild") else context.guild
@@ -431,12 +413,8 @@ class WeatherCommandHandler:
                     stage_duration,
                 )
 
-        except (
-            Exception
-        ) as e:  # noqa: BLE001 - Broad exception handling for user feedback
-            await self.display_service.send_error(
-                context, ERROR_GENERATING_STAGE.format(error=str(e)), is_slash
-            )
+        except Exception as e:  # noqa: BLE001 - Broad exception handling for user feedback
+            await self.display_service.send_error(context, ERROR_GENERATING_STAGE.format(error=str(e)), is_slash)
 
     async def _handle_journey(
         self,
@@ -498,9 +476,7 @@ class WeatherCommandHandler:
 
             await self.display_service.send_info(
                 context,
-                MSG_JOURNEY_START.format(
-                    season=season.title(), province=province.replace("_", " ").title()
-                )
+                MSG_JOURNEY_START.format(season=season.title(), province=province.replace("_", " ").title())
                 + "\n\nUse `/weather next` to generate the first day's weather.",
                 is_slash=is_slash,
             )
@@ -516,12 +492,8 @@ class WeatherCommandHandler:
                     province=province.lower(),
                 )
 
-        except (
-            Exception
-        ) as e:  # noqa: BLE001 - Broad exception handling for user feedback
-            await self.display_service.send_error(
-                context, ERROR_STARTING_JOURNEY.format(error=str(e)), is_slash
-            )
+        except Exception as e:  # noqa: BLE001 - Broad exception handling for user feedback
+            await self.display_service.send_error(context, ERROR_STARTING_JOURNEY.format(error=str(e)), is_slash)
 
     async def _handle_view(
         self,
@@ -529,9 +501,7 @@ class WeatherCommandHandler:
         guild_id: str,
         _season: Optional[str],  # Unused - kept for consistent signature
         _province: Optional[str],  # Unused - kept for consistent signature
-        _day: Optional[
-            int
-        ],  # day parameter used in body but flagged - using local 'day' instead
+        _day: Optional[int],  # day parameter used in body but flagged - using local 'day' instead
         is_slash: bool,
     ):
         """View specific day's weather."""
@@ -542,8 +512,7 @@ class WeatherCommandHandler:
             if day is None:
                 await self.display_service.send_error(
                     context,
-                    "❌ Day number is required to view historical weather.\n"
-                    "Example: `/weather view day:1`",
+                    "❌ Day number is required to view historical weather.\n" "Example: `/weather view day:1`",
                     is_slash,
                 )
                 return
@@ -563,26 +532,19 @@ class WeatherCommandHandler:
             if not weather_db:
                 await self.display_service.send_error(
                     context,
-                    f"❌ No weather data found for Day {day}. "
-                    f"Current journey is on Day {journey['current_day']}.",
+                    f"❌ No weather data found for Day {day}. " f"Current journey is on Day {journey.current_day}.",
                     is_slash,
                 )
                 return
 
             # Reconstruct display data from database
-            weather_data = self.weather_service.reconstruct_weather_data(
-                weather_db, day
-            )
+            weather_data = self.weather_service.reconstruct_weather_data(weather_db, day)
 
             # Display with historical flag
-            await self.display_service.show_daily_weather(
-                context, weather_data, is_slash, is_historical=True
-            )
+            await self.display_service.show_daily_weather(context, weather_data, is_slash, is_historical=True)
 
         except Exception as e:
-            await self.display_service.send_error(
-                context, f"Error viewing weather: {str(e)}", is_slash
-            )
+            await self.display_service.send_error(context, f"Error viewing weather: {str(e)}", is_slash)
 
     async def _handle_end(
         self,
@@ -598,15 +560,13 @@ class WeatherCommandHandler:
             journey = self.storage.get_journey_state(guild_id)
 
             if not journey:
-                await self.display_service.send_error(
-                    context, "❌ No journey in progress to end.", is_slash
-                )
+                await self.display_service.send_error(context, "❌ No journey in progress to end.", is_slash)
                 return
 
             # Get journey summary
-            total_days = journey["current_day"]
-            season = journey["season"]
-            province = journey["province"]
+            total_days = journey.current_day
+            season = journey.season
+            province = journey.province
 
             # End journey
             self.storage.end_journey(guild_id)
@@ -633,9 +593,7 @@ class WeatherCommandHandler:
                 )
 
         except Exception as e:
-            await self.display_service.send_error(
-                context, f"Error ending journey: {str(e)}", is_slash
-            )
+            await self.display_service.send_error(context, f"Error ending journey: {str(e)}", is_slash)
 
     async def _handle_override(
         self,
@@ -674,9 +632,7 @@ class WeatherCommandHandler:
         guild_id = str(context.guild.id) if context.guild else None
 
         if not guild_id:
-            await self.display_service.send_error(
-                context, "This command must be used in a server.", is_slash
-            )
+            await self.display_service.send_error(context, "This command must be used in a server.", is_slash)
             return
 
         try:
@@ -729,9 +685,7 @@ class WeatherCommandHandler:
             )
 
         except Exception as e:
-            await self.display_service.send_error(
-                context, f"Error configuring stage: {str(e)}", is_slash
-            )
+            await self.display_service.send_error(context, f"Error configuring stage: {str(e)}", is_slash)
 
     def _generate_daily_weather(self, guild_id: str, journey: dict) -> dict:
         """
@@ -739,12 +693,10 @@ class WeatherCommandHandler:
 
         Args:
             guild_id: Guild ID
-            journey: Current journey state
+            journey: Current journey state dict
 
         Returns:
             dict: Complete weather data including wind, temperature, conditions
         """
-        # Delegate to DailyWeatherService
-        return self.weather_service.generate_daily_weather(
-            guild_id, journey["season"], journey["province"]
-        )
+        # Delegate to DailyWeatherService (pass the whole journey dict)
+        return self.weather_service.generate_daily_weather(guild_id, journey)

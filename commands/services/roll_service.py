@@ -1,279 +1,221 @@
 """
-Roll Service - Business logic for dice rolling and WFRP mechanics.
+Roll Service - Business logic for dice rolling and WFRP skill tests.
 
-This service separates dice rolling logic from Discord interaction code,
-making it testable and reusable. Handles standard dice notation and
-WFRP 4th Edition skill test mechanics.
+This service contains all dice rolling logic extracted from the roll command.
+It has no Discord dependencies and returns structured data that commands
+can format for display.
 
-Usage Example:
+Design Principles:
+    - No Discord dependencies (pure business logic)
+    - Returns structured RollResult objects
+    - Delegates to utils.wfrp_mechanics for core logic
+    - Fully testable without mocking Discord objects
+
+Usage:
     >>> service = RollService()
-    >>> result = service.roll_simple_dice("2d6+3")
-    >>> print(f"Total: {result.total}")
-    >>>
-    >>> # WFRP skill test
-    >>> result = service.roll_wfrp_test("1d100", target=45, difficulty=20)
-    >>> print(f"Success: {result.success}, SL: {result.success_level}")
+    >>> result = service.roll_simple_dice("3d6+2")
+    >>> print(f"Rolled {result.total}")
+
+    >>> result = service.roll_wfrp_test(target=50, difficulty=20)
+    >>> print(f"Roll: {result.roll_value}, SL: {result.success_level}")
 """
 
 from dataclasses import dataclass
-from typing import List, Optional
-
+from typing import Optional, List
 from utils.wfrp_mechanics import (
     parse_dice_notation,
     roll_dice,
+    calculate_success_level,
     check_wfrp_doubles,
-)
-from commands.constants import (
-    WFRP_SKILL_MIN,
-    WFRP_SKILL_MAX,
-    WFRP_ROLL_FUMBLE,
-    WFRP_ROLL_MIN_DOUBLE,
+    get_success_level_name,
+    RESULT_CRIT,
+    RESULT_FUMBLE,
 )
 
 
 @dataclass
 class RollResult:
     """
-    Result of a dice roll with optional WFRP mechanics.
+    Result of a dice roll operation.
 
     Attributes:
-        dice_notation: Original dice notation string (e.g., "2d6+3")
-        num_dice: Number of dice rolled
-        die_size: Size of each die (e.g., 6 for d6)
-        dice_modifier: Modifier added to roll (e.g., +3)
+        roll_value: Primary result value
+        dice_notation: Original dice notation string
         individual_rolls: List of individual die results
-        total: Sum of all dice plus modifier
-
-        # WFRP-specific fields (only populated for WFRP tests)
-        is_wfrp_test: True if this was a WFRP skill test
-        target: Original skill target value (before difficulty modifier)
-        difficulty: Difficulty modifier applied (-50 to +60)
-        final_target: Target after applying difficulty (clamped to 1-100)
-        success: True if roll succeeded (roll <= final_target)
-        success_level: WFRP Success Level (SL)
-        is_double: True if roll has matching digits (e.g., 11, 22, 33)
-        is_critical: True if roll is a critical success (doubles ≤ target)
-        is_fumble: True if roll is a fumble (100 or doubles > target)
-        doubles_classification: "crit", "fumble", or "none"
+        total: Total of all rolls plus modifiers
+        num_dice: Number of dice rolled
+        die_size: Size of each die
+        dice_modifier: Modifier applied to dice total
+        is_wfrp_test: Whether this was a WFRP skill test
+        target: Target number for skill test (None for simple rolls)
+        difficulty: Difficulty modifier for skill test (None for simple rolls)
+        final_target: Final target after difficulty modifier (None for simple rolls)
+        success: Whether the test succeeded (None for simple rolls)
+        success_level: WFRP Success Level (None for simple rolls)
+        is_double: Whether the roll was a double (None for simple rolls)
+        is_critical: Whether it was a critical success (None for simple rolls)
+        is_fumble: Whether it was a fumble (None for simple rolls)
         outcome_text: Human-readable outcome description
-
-    Example:
-        Simple roll:
-            RollResult(
-                dice_notation="2d6+3",
-                num_dice=2,
-                die_size=6,
-                dice_modifier=3,
-                individual_rolls=[4, 5],
-                total=12,
-                is_wfrp_test=False,
-                ...
-            )
-
-        WFRP test:
-            RollResult(
-                dice_notation="1d100",
-                num_dice=1,
-                die_size=100,
-                dice_modifier=0,
-                individual_rolls=[33],
-                total=33,
-                is_wfrp_test=True,
-                target=45,
-                difficulty=20,
-                final_target=65,
-                success=True,
-                success_level=3,
-                is_double=True,
-                is_critical=True,
-                is_fumble=False,
-                doubles_classification="crit",
-                outcome_text="✅ Success | SL: +3 | 🎉 Critical Success!",
-            )
     """
-
-    # Basic roll information
+    roll_value: int
     dice_notation: str
-    num_dice: int
-    die_size: int
-    dice_modifier: int
     individual_rolls: List[int]
     total: int
-
-    # WFRP-specific fields
+    num_dice: int
+    die_size: int
+    dice_modifier: int = 0
     is_wfrp_test: bool = False
     target: Optional[int] = None
     difficulty: Optional[int] = None
     final_target: Optional[int] = None
     success: Optional[bool] = None
     success_level: Optional[int] = None
-    is_double: bool = False
-    is_critical: bool = False
-    is_fumble: bool = False
-    doubles_classification: str = "none"
+    is_double: Optional[bool] = None
+    is_critical: Optional[bool] = None
+    is_fumble: Optional[bool] = None
     outcome_text: Optional[str] = None
 
 
 class RollService:
     """
-    Service for dice rolling and WFRP mechanics.
+    Service for handling dice rolling and WFRP skill tests.
 
-    Provides methods for simple dice rolling and WFRP skill tests with
-    success level calculation and doubles classification.
+    This service is pure business logic with no Discord dependencies.
+    All methods return structured RollResult objects that can be
+    formatted by the command layer.
+
+    Methods:
+        roll_simple_dice: Roll standard dice notation (XdY�Z)
+        roll_wfrp_test: Perform WFRP 4e skill test (d100 vs target)
     """
 
     def roll_simple_dice(self, notation: str) -> RollResult:
         """
-        Roll dice using standard notation (XdY+Z).
+        Roll dice using standard notation (e.g., "3d6+2").
+
+        Parses notation, rolls dice, and returns structured result.
 
         Args:
-            notation: Dice notation string (e.g., "2d6+3", "1d100", "3d10-2")
+            notation: Dice notation string (XdY�Z format)
+                - X = number of dice (1-100)
+                - Y = die size (2-1000)
+                - Z = optional modifier (-999 to +999)
 
         Returns:
-            RollResult with basic roll information
+            RollResult: Roll details with individual rolls and total
 
         Raises:
-            ValueError: If notation is invalid
+            ValueError: If notation is invalid or out of valid ranges
 
         Examples:
             >>> service = RollService()
-            >>> result = service.roll_simple_dice("2d6+3")
-            >>> print(result.total)
-            12
+            >>> result = service.roll_simple_dice("3d6")
+            >>> print(result.total)  # Sum of 3d6
+
+            >>> result = service.roll_simple_dice("1d100+5")
+            >>> print(result.total)  # 1d100 + 5
         """
-        # Parse the dice notation
-        num_dice, die_size, dice_modifier = parse_dice_notation(notation)
+        # Parse dice notation (may raise ValueError)
+        num_dice, die_size, modifier = parse_dice_notation(notation)
 
         # Roll the dice
-        results = roll_dice(num_dice, die_size)
-        total = sum(results) + dice_modifier
+        rolls = roll_dice(num_dice, die_size)
+
+        # Calculate total
+        total = sum(rolls) + modifier
 
         return RollResult(
+            roll_value=total,
             dice_notation=notation,
+            individual_rolls=rolls,
+            total=total,
             num_dice=num_dice,
             die_size=die_size,
-            dice_modifier=dice_modifier,
-            individual_rolls=results,
-            total=total,
-            is_wfrp_test=False,
+            dice_modifier=modifier,
+            is_wfrp_test=False
         )
 
     def roll_wfrp_test(
-        self, notation: str, target: int, difficulty: int = 20
+        self,
+        dice: str,
+        target: int,
+        difficulty: int = 0
     ) -> RollResult:
         """
-        Roll a WFRP 4th Edition skill test with success level calculation.
+        Perform a WFRP 4e skill test (d100 vs modified target).
 
-        Applies WFRP mechanics:
-        - Success Level (SL) = (Final Target ÷ 10) - (Roll ÷ 10)
-        - Doubles can be criticals (≤ target) or fumbles (> target)
-        - Roll of 100 is always a fumble
-        - Roll of 01 counts as doubles
+        Rolls d100, applies difficulty modifier, calculates Success Level (SL),
+        and checks for criticals/fumbles (doubles system).
+
+        WFRP 4e Rules:
+            - Roll d100 (1-100)
+            - Modified target = base target + difficulty modifier
+            - Success if roll <= modified target
+            - SL = (target tens) - (roll tens)
+            - Doubles (11, 22, etc.):
+                - If <= target: Critical Success
+                - If > target: Fumble
+            - Roll of 100 is always fumble
 
         Args:
-            notation: Dice notation (should be "1d100" for WFRP tests)
+            dice: Dice notation (should be "1d100" for WFRP tests)
             target: Base skill value (1-100)
-            difficulty: Difficulty modifier (-50 to +60, default +20 Average)
+            difficulty: Difficulty modifier (-50 to +60)
+                - Positive makes test easier (Easy +40, Average +20)
+                - Negative makes test harder (Hard -20, Difficult -10)
 
         Returns:
-            RollResult with WFRP mechanics calculated
-
-        Raises:
-            ValueError: If target is not between 1 and 100
-            ValueError: If notation is not valid d100 roll
+            RollResult: Complete test results including SL, doubles, outcome
 
         Examples:
             >>> service = RollService()
-            >>> result = service.roll_wfrp_test("1d100", target=45, difficulty=20)
+            >>> result = service.roll_wfrp_test("1d100", target=50, difficulty=0)
             >>> print(f"Success: {result.success}, SL: {result.success_level}")
-            Success: True, SL: +2
-            >>>
-            >>> # Critical success (doubles ≤ target)
-            >>> # If you rolled 33 with final target 65
-            >>> print(result.is_critical)
-            True
+
+            >>> result = service.roll_wfrp_test("1d100", target=50, difficulty=-20)  # Hard test
+            >>> print(result.outcome_text)  # "Success (+2 SL)" or similar
         """
-        # Validate target range
-        if target < WFRP_SKILL_MIN or target > WFRP_SKILL_MAX:
-            raise ValueError(
-                f"Target must be between {WFRP_SKILL_MIN} and {WFRP_SKILL_MAX}"
-            )
+        # Parse dice notation to validate it's 1d100 (or use it if different)
+        num_dice, die_size, dice_mod = parse_dice_notation(dice)
 
-        # Roll the dice (should be 1d100 for WFRP)
-        num_dice, die_size, dice_modifier = parse_dice_notation(notation)
+        # Roll the dice
+        rolls = roll_dice(num_dice, die_size)
+        roll_value = rolls[0] if num_dice == 1 else sum(rolls)
 
-        # Validate this is a d100 roll
-        if num_dice != 1 or die_size != 100:
-            raise ValueError("WFRP tests must use 1d100 notation")
+        # Calculate modified target
+        modified_target = target + difficulty
 
-        results = roll_dice(num_dice, die_size)
-        roll_value = results[0]
-        total = roll_value + dice_modifier
+        # Check for doubles (crits/fumbles)
+        doubles_result = check_wfrp_doubles(roll_value, modified_target)
+        is_double = doubles_result in (RESULT_CRIT, RESULT_FUMBLE)
+        is_critical = doubles_result == RESULT_CRIT
+        is_fumble = doubles_result == RESULT_FUMBLE
 
-        # Apply difficulty modifier to target and clamp
-        final_target = target + difficulty
-        final_target = max(WFRP_SKILL_MIN, min(WFRP_SKILL_MAX, final_target))
+        # Calculate success
+        success = roll_value <= modified_target
 
-        # Calculate success and success level
-        success = roll_value <= final_target
-        success_level = (final_target // 10) - (roll_value // 10)
+        # Calculate success level
+        success_level = calculate_success_level(roll_value, modified_target)
 
-        # Check for doubles (criticals/fumbles)
-        is_double = False
-        doubles_classification = "none"
-        is_critical = False
-        is_fumble = False
-
-        # 100 is always a fumble
-        if roll_value == WFRP_ROLL_FUMBLE:
-            is_double = True
-            is_fumble = True
-            doubles_classification = "fumble"
-        else:
-            # Treat 01 as low double, detect matching-digit doubles
-            is_double = roll_value == WFRP_ROLL_MIN_DOUBLE or (roll_value // 10) == (
-                roll_value % 10
-            )
-
-            if is_double:
-                # Use final target for classification
-                doubles_classification = check_wfrp_doubles(roll_value, final_target)
-                is_critical = doubles_classification == "crit"
-                is_fumble = doubles_classification == "fumble"
-
-        # Build outcome text
-        outcome_parts = []
-
-        if success:
-            outcome_parts.append(f"✅ Success | SL: {success_level:+d}")
-        else:
-            outcome_parts.append(f"❌ Failure | SL: {success_level:+d}")
-
-        if is_critical:
-            outcome_parts.append(
-                f"🎉 Critical Success! (Rolled {roll_value:02d} ≤ {final_target})"
-            )
-        elif is_fumble:
-            outcome_parts.append(f"💀 Fumble! (Rolled {roll_value:02d})")
-
-        outcome_text = " | ".join(outcome_parts)
+        # Get descriptive outcome
+        outcome_text = get_success_level_name(success_level, success)
 
         return RollResult(
-            dice_notation=notation,
+            roll_value=roll_value,
+            dice_notation=dice,
+            individual_rolls=rolls,
+            total=roll_value,
             num_dice=num_dice,
             die_size=die_size,
-            dice_modifier=dice_modifier,
-            individual_rolls=results,
-            total=total,
+            dice_modifier=dice_mod,
             is_wfrp_test=True,
             target=target,
             difficulty=difficulty,
-            final_target=final_target,
+            final_target=modified_target,
             success=success,
             success_level=success_level,
             is_double=is_double,
             is_critical=is_critical,
             is_fumble=is_fumble,
-            doubles_classification=doubles_classification,
-            outcome_text=outcome_text,
+            outcome_text=outcome_text
         )

@@ -19,28 +19,41 @@ class JourneyRepository:
     creation, retrieval, updates, and deletion.
     """
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, persistent_conn=None):
         """
         Initialize repository with database path.
 
         Args:
             db_path: Path to SQLite database file
+            persistent_conn: Optional persistent connection for :memory: databases
         """
         self.db_path = db_path
+        self._persistent_conn = persistent_conn
 
     @contextmanager
     def _get_connection(self):
         """Context manager for database connections."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        # Use persistent connection if available (for :memory: databases)
+        if self._persistent_conn:
+            # Don't close persistent connections
+            try:
+                yield self._persistent_conn
+                self._persistent_conn.commit()
+            except Exception:
+                self._persistent_conn.rollback()
+                raise
+        else:
+            # Create new connection for file-based databases
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
     def create_journey(self, journey: JourneyState) -> None:
         """
@@ -150,6 +163,72 @@ class JourneyRepository:
                 """,
                 (cold_front_days, heat_wave_days, guild_id),
             )
+
+    def update_stage_duration(self, guild_id: str, stage_duration: int) -> None:
+        """
+        Update stage duration for a journey.
+
+        Args:
+            guild_id: Discord guild ID
+            stage_duration: New stage duration in days
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE guild_weather_state
+                SET stage_duration = ?
+                WHERE guild_id = ?
+                """,
+                (stage_duration, guild_id),
+            )
+
+    def update_stage_display_mode(self, guild_id: str, display_mode: str) -> None:
+        """
+        Update stage display mode for a journey.
+
+        Args:
+            guild_id: Discord guild ID
+            display_mode: Display mode ('simple' or 'detailed')
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE guild_weather_state
+                SET stage_display_mode = ?
+                WHERE guild_id = ?
+                """,
+                (display_mode, guild_id),
+            )
+
+    def get_all_journeys(self) -> list[JourneyState]:
+        """
+        Get all active journeys.
+
+        Returns:
+            List of JourneyState dataclasses for all active guilds
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM guild_weather_state")
+            rows = cursor.fetchall()
+
+            return [
+                JourneyState(
+                    guild_id=row["guild_id"],
+                    season=row["season"],
+                    province=row["province"],
+                    current_day=row["current_day"],
+                    current_stage=row["current_stage"],
+                    stage_duration=row["stage_duration"],
+                    stage_display_mode=row["stage_display_mode"],
+                    days_since_last_cold_front=row["days_since_last_cold_front"],
+                    days_since_last_heat_wave=row["days_since_last_heat_wave"],
+                    last_weather_date=row["last_weather_date"],
+                )
+                for row in rows
+            ]
 
     def delete_journey(self, guild_id: str) -> int:
         """

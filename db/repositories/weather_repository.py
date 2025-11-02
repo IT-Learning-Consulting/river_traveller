@@ -20,28 +20,41 @@ class WeatherRepository:
     saving, retrieving, and deleting weather data.
     """
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, persistent_conn=None):
         """
         Initialize repository with database path.
 
         Args:
             db_path: Path to SQLite database file
+            persistent_conn: Optional persistent connection for :memory: databases
         """
         self.db_path = db_path
+        self._persistent_conn = persistent_conn
 
     @contextmanager
     def _get_connection(self):
         """Context manager for database connections."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        # Use persistent connection if available (for :memory: databases)
+        if self._persistent_conn:
+            # Don't close persistent connections
+            try:
+                yield self._persistent_conn
+                self._persistent_conn.commit()
+            except Exception:
+                self._persistent_conn.rollback()
+                raise
+        else:
+            # Create new connection for file-based databases
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
     def save_daily_weather(self, guild_id: str, weather: DailyWeather) -> None:
         """
@@ -93,27 +106,32 @@ class WeatherRepository:
             cursor.execute(
                 """
                 INSERT OR REPLACE INTO daily_weather (
-                    guild_id, day_number, weather_type, wind_timeline,
-                    actual_temp, perceived_temp, temp_category, temp_modifier, temp_roll,
+                    guild_id, day_number, season, province,
+                    weather_type, weather_roll, wind_timeline,
+                    temperature_actual, perceived_temp, temperature_category, temp_modifier, temperature_roll,
                     cold_front_days_remaining, cold_front_total_duration,
                     heat_wave_days_remaining, heat_wave_total_duration,
-                    generated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    weather_effects, generated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     guild_id,
                     weather.day_number,
+                    weather.season,
+                    weather.province,
                     weather.weather_type,
+                    0,  # weather_roll - not tracked currently
                     wind_timeline_json,
                     weather.temperature.actual,
                     weather.temperature.perceived,
                     weather.temperature.category,
                     weather.temperature.modifier,
                     weather.temperature.roll,
-                    weather.special_event.days_remaining if weather.special_event.event_type == "cold_front" else None,
-                    weather.special_event.total_duration if weather.special_event.event_type == "cold_front" else None,
-                    weather.special_event.days_remaining if weather.special_event.event_type == "heat_wave" else None,
-                    weather.special_event.total_duration if weather.special_event.event_type == "heat_wave" else None,
+                    weather.special_event.days_remaining if weather.special_event.event_type == "cold_front" else 0,
+                    weather.special_event.total_duration if weather.special_event.event_type == "cold_front" else 0,
+                    weather.special_event.days_remaining if weather.special_event.event_type == "heat_wave" else 0,
+                    weather.special_event.total_duration if weather.special_event.event_type == "heat_wave" else 0,
+                    json.dumps(weather.weather_effects),
                     weather.generated_at,
                 ),
             )
@@ -189,6 +207,35 @@ class WeatherRepository:
             )
             return cursor.rowcount
 
+    def cleanup_old_weather(self, days_to_keep: int = 30) -> int:
+        """
+        Delete weather data older than specified days for all guilds.
+
+        Args:
+            days_to_keep: Number of recent days to keep per guild
+
+        Returns:
+            Number of records deleted
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+
+            # For each guild, delete days older than days_to_keep
+            cursor.execute(
+                """
+                DELETE FROM daily_weather
+                WHERE (guild_id, day_number) IN (
+                    SELECT d.guild_id, d.day_number
+                    FROM daily_weather d
+                    JOIN guild_weather_state g ON d.guild_id = g.guild_id
+                    WHERE d.day_number < g.current_day - ?
+                )
+            """,
+                (days_to_keep,),
+            )
+
+            return cursor.rowcount
+
     def _row_to_daily_weather(self, row: sqlite3.Row) -> DailyWeather:
         """
         Convert database row to DailyWeather dataclass.
@@ -205,30 +252,30 @@ class WeatherRepository:
             dawn=WindCondition(
                 strength=wind_data[0]["strength"],
                 direction=wind_data[0]["direction"],
-                rolls=wind_data[0]["rolls"],
-                modifier=wind_data[0]["modifier"],
-                notes=wind_data[0]["notes"],
+                rolls=wind_data[0].get("rolls", []),
+                modifier=wind_data[0].get("modifier", 0),
+                notes=wind_data[0].get("notes", ""),
             ),
             midday=WindCondition(
                 strength=wind_data[1]["strength"],
                 direction=wind_data[1]["direction"],
-                rolls=wind_data[1]["rolls"],
-                modifier=wind_data[1]["modifier"],
-                notes=wind_data[1]["notes"],
+                rolls=wind_data[1].get("rolls", []),
+                modifier=wind_data[1].get("modifier", 0),
+                notes=wind_data[1].get("notes", ""),
             ),
             dusk=WindCondition(
                 strength=wind_data[2]["strength"],
                 direction=wind_data[2]["direction"],
-                rolls=wind_data[2]["rolls"],
-                modifier=wind_data[2]["modifier"],
-                notes=wind_data[2]["notes"],
+                rolls=wind_data[2].get("rolls", []),
+                modifier=wind_data[2].get("modifier", 0),
+                notes=wind_data[2].get("notes", ""),
             ),
             midnight=WindCondition(
                 strength=wind_data[3]["strength"],
                 direction=wind_data[3]["direction"],
-                rolls=wind_data[3]["rolls"],
-                modifier=wind_data[3]["modifier"],
-                notes=wind_data[3]["notes"],
+                rolls=wind_data[3].get("rolls", []),
+                modifier=wind_data[3].get("modifier", 0),
+                notes=wind_data[3].get("notes", ""),
             ),
         )
 
@@ -257,22 +304,28 @@ class WeatherRepository:
 
         # Build temperature data
         temperature = TemperatureData(
-            actual=row["actual_temp"],
+            actual=row["temperature_actual"],
             perceived=row["perceived_temp"],
-            category=row["temp_category"],
+            category=row["temperature_category"],
             modifier=row["temp_modifier"],
-            roll=row["temp_roll"],
+            roll=row["temperature_roll"],
         )
+
+        # Parse weather effects (handle missing column)
+        try:
+            weather_effects = json.loads(row["weather_effects"]) if row["weather_effects"] else []
+        except (KeyError, IndexError):
+            weather_effects = []
 
         return DailyWeather(
             day_number=row["day_number"],
             guild_id=row["guild_id"],
-            province="",  # Not stored in daily_weather table
-            season="",  # Not stored in daily_weather table
+            province=row["province"] if "province" in row.keys() else "",
+            season=row["season"] if "season" in row.keys() else "",
             weather_type=row["weather_type"],
             wind_timeline=wind_timeline,
             temperature=temperature,
             special_event=special_event,
-            weather_effects=[],  # Not stored in database
-            generated_at=row["generated_at"],
+            weather_effects=weather_effects,  # Now stored in database
+            generated_at=row["generated_at"] if "generated_at" in row.keys() else "",
         )

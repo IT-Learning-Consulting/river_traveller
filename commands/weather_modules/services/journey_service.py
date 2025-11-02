@@ -27,6 +27,7 @@ Usage:
 
 from typing import Optional, Dict, Tuple
 from db.weather_storage import WeatherStorage
+from db.models.weather_models import JourneyState
 
 
 class JourneyService:
@@ -52,7 +53,7 @@ class JourneyService:
 
     def start_journey(
         self, guild_id: str, season: str, province: str
-    ) -> Dict[str, any]:
+    ) -> Optional[JourneyState]:
         """
         Start a new journey with specified season and province.
 
@@ -81,25 +82,19 @@ class JourneyService:
         season = season.lower()
         province = province.lower()
 
-        # Check if replacing existing journey
-        existing_journey = self.storage.get_journey_state(guild_id)
-        replaced_existing = existing_journey is not None
-
-        # End existing journey if present (storage handles this)
+        # End existing journey if present (storage handles this automatically)
         self.storage.start_journey(guild_id, season, province)
 
         # Get the newly created journey state
         journey = self.storage.get_journey_state(guild_id)
 
-        # Enhance with additional fields for tests
-        if journey:
-            journey["guild_id"] = guild_id
-            journey["current_stage"] = 1
-            journey["replaced_existing"] = replaced_existing
+        # Note: journey is now a JourneyState dataclass (frozen/immutable)
+        # The guild_id and current_stage are already part of the dataclass
+        # No need to "enhance" - all fields are already present from storage
 
         return journey
 
-    def end_journey(self, guild_id: str) -> Optional[Dict[str, any]]:
+    def end_journey(self, guild_id: str) -> Optional[JourneyState]:
         """
         End the current journey and return final state summary.
 
@@ -110,13 +105,13 @@ class JourneyService:
             guild_id: Guild identifier
 
         Returns:
-            dict or None: Final journey state before deletion, or None if no journey exists.
-                Contains keys: season, province, current_day, final_day, stage_duration, display_mode
+            JourneyState or None: Final journey state before deletion, or None if no
+                journey exists. JourneyState contains all journey information.
 
         Example:
             >>> final_state = service.end_journey("123")
             >>> if final_state:
-            ...     print(f"Journey lasted {final_state['current_day']} days")
+            ...     print(f"Journey lasted {final_state.current_day} days")
         """
         # Get journey state before ending (for summary)
         journey = self.storage.get_journey_state(guild_id)
@@ -124,15 +119,13 @@ class JourneyService:
         if not journey:
             return None
 
-        # Enhance with final_day for summary
-        journey["final_day"] = journey.get("current_day", 1)
-
         # End journey (storage removes journey and weather data)
         self.storage.end_journey(guild_id)
 
+        # Return the final state (immutable JourneyState dataclass)
         return journey
 
-    def get_journey_state(self, guild_id: str) -> Optional[Dict[str, any]]:
+    def get_journey_state(self, guild_id: str) -> Optional[JourneyState]:
         """
         Retrieve current journey state.
 
@@ -140,25 +133,26 @@ class JourneyService:
             guild_id: Guild identifier
 
         Returns:
-            dict or None: Journey state if exists, None otherwise.
-                Keys: season, province, current_day, stage_duration, display_mode
+            JourneyState or None: Journey state dataclass if exists, None otherwise.
 
         Example:
             >>> journey = service.get_journey_state("123")
             >>> if journey:
-            ...     print(f"Day {journey['current_day']}")
+            ...     print(f"Day {journey.current_day}")
         """
         return self.storage.get_journey_state(guild_id)
 
-    def get_journey(self, guild_id: str) -> Optional[Dict[str, any]]:
+    def get_journey(self, guild_id: str) -> Optional[JourneyState]:
         """
         Alias for get_journey_state for backward compatibility.
+
+        Deprecated: Use get_journey_state() instead.
 
         Args:
             guild_id: Guild identifier
 
         Returns:
-            dict or None: Journey state if exists, None otherwise
+            JourneyState or None: Journey state if exists, None otherwise
         """
         return self.get_journey_state(guild_id)
 

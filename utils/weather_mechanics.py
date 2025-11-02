@@ -94,11 +94,14 @@ TEMP_WARM: int = 5
 TEMP_HIGH: int = 9
 TEMP_VERY_HIGH: int = 14
 
-# Wind chill modifiers
-WIND_CHILL_LIGHT_BRACING: int = -5
-WIND_CHILL_STRONG_VERY_STRONG: int = -10
-WIND_CHILL_WINDS_LIGHT: List[str] = ["light", "bracing"]
-WIND_CHILL_WINDS_STRONG: List[str] = ["strong", "very_strong"]
+# Wind chill modifiers (temperature feels colder in wind)
+# Calm & Light: 0°C (no wind chill)
+# Bracing & Strong: -5°C
+# Very Strong: -10°C
+WIND_CHILL_BRACING_STRONG: int = -5
+WIND_CHILL_VERY_STRONG: int = -10
+WIND_CHILL_WINDS_BRACING_STRONG: List[str] = ["bracing", "strong"]
+WIND_CHILL_WINDS_VERY_STRONG: List[str] = ["very_strong"]
 
 # Temperature description thresholds
 DESC_DANGEROUS_COLD: int = -15
@@ -171,7 +174,7 @@ def generate_wind_conditions() -> Tuple[str, str]:
     return strength, direction
 
 
-def check_wind_change(current_strength: str) -> Tuple[bool, str]:
+def check_wind_change(current_strength: str) -> Tuple[bool, str, int]:
     """
     Check if wind strength changes (10% chance per time period).
 
@@ -182,19 +185,19 @@ def check_wind_change(current_strength: str) -> Tuple[bool, str]:
         current_strength: Current wind strength key (from WIND_STRENGTH_ORDER)
 
     Returns:
-        Tuple[bool, str]: (changed, new_strength). Examples:
-            - (False, "light") - No change
-            - (True, "bracing") - Changed from light to bracing
+        Tuple[bool, str, int]: (changed, new_strength, roll). Examples:
+            - (False, "light", 5) - No change, rolled 5
+            - (True, "bracing", 1) - Changed from light to bracing, rolled 1
 
     Example:
-        >>> changed, new_strength = check_wind_change("light")
+        >>> changed, new_strength, roll = check_wind_change("light")
         >>> if changed:
-        ...     print(f"Wind changed to {new_strength}")
+        ...     print(f"Wind changed to {new_strength} (rolled {roll})")
     """
     roll = random.randint(D10_MIN, D10_MAX)
 
     if roll != WIND_CHANGE_ROLL:
-        return False, current_strength
+        return False, current_strength, roll
 
     # Wind changes - 50% stronger, 50% lighter
     direction = random.choice(WIND_CHANGE_DIRECTIONS)
@@ -204,15 +207,15 @@ def check_wind_change(current_strength: str) -> Tuple[bool, str]:
     if direction == "stronger":
         if current_strength == "very_strong":
             # Very Strong can only go to Strong
-            return True, VERY_STRONG_MAX
+            return True, VERY_STRONG_MAX, roll
         new_index = min(current_index + 1, len(WIND_STRENGTH_ORDER) - 1)
     else:  # lighter
         if current_strength == "calm":
             # Calm can only go to Light
-            return True, CALM_MIN
+            return True, CALM_MIN, roll
         new_index = max(current_index - 1, 0)
 
-    return True, WIND_STRENGTH_ORDER[new_index]
+    return True, WIND_STRENGTH_ORDER[new_index], roll
 
 
 def get_wind_modifiers(strength: str, direction: str) -> Dict[str, Optional[str]]:
@@ -237,9 +240,7 @@ def get_wind_modifiers(strength: str, direction: str) -> Dict[str, Optional[str]
         >>> print(mods['notes'])
         Tacking required for speed bonus
     """
-    modifier_data = WIND_MODIFIERS.get(
-        (strength, direction), (DEFAULT_WIND_MODIFIER, None)
-    )
+    modifier_data = WIND_MODIFIERS.get((strength, direction), (DEFAULT_WIND_MODIFIER, None))
 
     return {
         "modifier": modifier_data[0],
@@ -252,10 +253,11 @@ def generate_daily_wind() -> List[Dict[str, str]]:
     Generate wind conditions for a full day (dawn, midday, dusk, midnight).
 
     Returns:
-        List of dicts with 'time', 'strength', 'direction', 'changed' keys
+        List of dicts with 'time', 'strength', 'direction', 'changed', 'strength_roll', 'direction_roll' keys
     """
     # Initial wind at dawn
     strength, direction = generate_wind_conditions()
+    initial_direction_roll = random.randint(1, 10)  # The roll that determined initial direction
 
     wind_timeline = [
         {
@@ -263,14 +265,17 @@ def generate_daily_wind() -> List[Dict[str, str]]:
             "strength": strength,
             "direction": direction,
             "changed": False,
+            "strength_roll": None,  # No change check at dawn (initial)
+            "direction_roll": initial_direction_roll,
         }
     ]
 
     # Check for changes at midday, dusk, midnight
     for time in ["Midday", "Dusk", "Midnight"]:
-        changed, strength = check_wind_change(strength)
+        changed, strength, strength_roll = check_wind_change(strength)
 
         # If wind changed, may also change direction
+        direction_roll = None
         if changed:
             # 50% chance direction also changes
             if random.randint(1, 2) == 1:
@@ -283,6 +288,8 @@ def generate_daily_wind() -> List[Dict[str, str]]:
                 "strength": strength,
                 "direction": direction,
                 "changed": changed,
+                "strength_roll": strength_roll,
+                "direction_roll": direction_roll,
             }
         )
 
@@ -300,7 +307,7 @@ def generate_daily_wind_with_previous(
         previous_midnight_wind: Dict with 'strength' and 'direction' from yesterday's midnight
 
     Returns:
-        List of dicts with 'time', 'strength', 'direction', 'changed' keys
+        List of dicts with 'time', 'strength', 'direction', 'changed', 'strength_roll', 'direction_roll' keys
     """
     # Start with previous midnight conditions
     strength = previous_midnight_wind["strength"]
@@ -310,9 +317,10 @@ def generate_daily_wind_with_previous(
 
     # Check for changes at dawn, midday, dusk, midnight (all 4 time periods)
     for time in ["Dawn", "Midday", "Dusk", "Midnight"]:
-        changed, strength = check_wind_change(strength)
+        changed, strength, strength_roll = check_wind_change(strength)
 
         # If wind changed, may also change direction
+        direction_roll = None
         if changed:
             # 50% chance direction also changes
             if random.randint(1, 2) == 1:
@@ -325,6 +333,8 @@ def generate_daily_wind_with_previous(
                 "strength": strength,
                 "direction": direction,
                 "changed": changed,
+                "strength_roll": strength_roll,
+                "direction_roll": direction_roll,
             }
         )
 
@@ -406,9 +416,7 @@ def roll_temperature(season: str, province: str) -> Tuple[int, str, str]:
     base_temp = get_province_base_temperature(province, season)
     actual_temp = base_temp + modifier
 
-    description = TEMPERATURE_DESCRIPTIONS.get(
-        category, TEMPERATURE_DESCRIPTIONS[FALLBACK_TEMP_CATEGORY]
-    )
+    description = TEMPERATURE_DESCRIPTIONS.get(category, TEMPERATURE_DESCRIPTIONS[FALLBACK_TEMP_CATEGORY])
 
     return actual_temp, category, description
 
@@ -501,9 +509,7 @@ def handle_cold_front(
             return 0, 0, 0
 
         # New cold front triggers!
-        duration = random.randint(
-            COLD_FRONT_MIN_DURATION, COLD_FRONT_MAX_DURATION
-        )  # 1d5 days
+        duration = random.randint(COLD_FRONT_MIN_DURATION, COLD_FRONT_MAX_DURATION)  # 1d5 days
         return COLD_FRONT_TEMP_MODIFIER, duration, duration
 
     # No cold front
@@ -632,9 +638,7 @@ def roll_temperature_with_special_events(
     final_category = get_category_from_actual_temp(actual_temp, base_temp)
 
     # 8. Build description
-    description = TEMPERATURE_DESCRIPTIONS.get(
-        final_category, TEMPERATURE_DESCRIPTIONS["average"]
-    )
+    description = TEMPERATURE_DESCRIPTIONS.get(final_category, TEMPERATURE_DESCRIPTIONS["average"])
 
     # 9. Add special event information with day counters
     if cold_front_remaining > 0:
@@ -645,7 +649,9 @@ def roll_temperature_with_special_events(
             description += f"\n*{EMOJI_COLD_FRONT} Cold Front: Day {days_elapsed} of {cold_front_total_new} - Sky filled with flocks of emigrating birds*"
         elif cold_front_remaining == 1:
             # Final day
-            description += f"\n*{EMOJI_COLD_FRONT} Cold Front: Day {days_elapsed} of {cold_front_total_new} (Final Day)*"
+            description += (
+                f"\n*{EMOJI_COLD_FRONT} Cold Front: Day {days_elapsed} of {cold_front_total_new} (Final Day)*"
+            )
         else:
             # Middle days
             description += f"\n*{EMOJI_COLD_FRONT} Cold Front: Day {days_elapsed} of {cold_front_total_new}*"
@@ -680,9 +686,9 @@ def apply_wind_chill(temperature: int, wind_strength: str) -> int:
     Apply wind chill modifier to temperature based on wind strength.
 
     Wind chill makes it feel colder:
-    - Light/Bracing winds: -5°C
-    - Strong/Very Strong winds: -10°C
-    - Calm winds: No effect
+    - Calm & Light: 0°C (no wind chill)
+    - Bracing & Strong: -5°C
+    - Very Strong: -10°C
 
     Args:
         temperature: Actual temperature in Celsius
@@ -693,18 +699,18 @@ def apply_wind_chill(temperature: int, wind_strength: str) -> int:
 
     Example:
         >>> apply_wind_chill(10, "light")
+        10  # No wind chill for Light
+        >>> apply_wind_chill(10, "bracing")
         5  # Feels 5°C colder
-        >>> apply_wind_chill(10, "strong")
+        >>> apply_wind_chill(10, "very_strong")
         0  # Feels 10°C colder
-        >>> apply_wind_chill(10, "calm")
-        10  # No wind chill
     """
-    if wind_strength in WIND_CHILL_WINDS_LIGHT:
-        return temperature + WIND_CHILL_LIGHT_BRACING
-    elif wind_strength in WIND_CHILL_WINDS_STRONG:
-        return temperature + WIND_CHILL_STRONG_VERY_STRONG
+    if wind_strength in WIND_CHILL_WINDS_BRACING_STRONG:
+        return temperature + WIND_CHILL_BRACING_STRONG
+    elif wind_strength in WIND_CHILL_WINDS_VERY_STRONG:
+        return temperature + WIND_CHILL_VERY_STRONG
     else:
-        return temperature
+        return temperature  # Calm and Light have no wind chill
 
 
 def get_temperature_description_text(temp: int, base_temp: int) -> str:
@@ -765,14 +771,14 @@ def get_wind_chill_note(wind_strength: str) -> str:
 
     Example:
         >>> get_wind_chill_note("light")
-        ' (feels 5°C colder due to Light wind)'
-        >>> get_wind_chill_note("strong")
-        ' (feels 10°C colder due to Strong wind)'
-        >>> get_wind_chill_note("calm")
-        ''
+        ''  # No wind chill for Light
+        >>> get_wind_chill_note("bracing")
+        ' (feels 5°C colder due to Bracing wind)'
+        >>> get_wind_chill_note("very_strong")
+        ' (feels 10°C colder due to Very Strong wind)'
     """
-    if wind_strength in WIND_CHILL_WINDS_LIGHT:
-        return f" (feels {abs(WIND_CHILL_LIGHT_BRACING)}°C colder due to {WIND_STRENGTH[wind_strength]} wind)"
-    elif wind_strength in WIND_CHILL_WINDS_STRONG:
-        return f" (feels {abs(WIND_CHILL_STRONG_VERY_STRONG)}°C colder due to {WIND_STRENGTH[wind_strength]} wind)"
-    return ""
+    if wind_strength in WIND_CHILL_WINDS_BRACING_STRONG:
+        return f" (feels {abs(WIND_CHILL_BRACING_STRONG)}°C colder due to {WIND_STRENGTH[wind_strength]} wind)"
+    elif wind_strength in WIND_CHILL_WINDS_VERY_STRONG:
+        return f" (feels {abs(WIND_CHILL_VERY_STRONG)}°C colder due to {WIND_STRENGTH[wind_strength]} wind)"
+    return ""  # Calm and Light have no wind chill

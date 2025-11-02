@@ -1,214 +1,215 @@
 """
-Command Logger Service - Centralized logging for Discord commands.
+Command Logger Service - Centralized logging to Discord channels.
 
-This service handles command logging to the boat-travelling-log channel,
-eliminating duplicate logging code across command files. Provides graceful
-failure handling when log channels don't exist or permissions are missing.
+Encapsulates all logging-to-channel behavior, making it injectable
+and testable. Commands use this instead of directly accessing channels.
 
-Usage Example:
-    >>> logger = CommandLogger()
-    >>> await logger.log_command(
-    ...     guild=interaction.guild,
-    ...     user_name="TestUser",
-    ...     user_id=12345,
-    ...     command_name="roll",
-    ...     command_string="/roll 1d100",
-    ...     fields={"Dice": "1d100"}
-    ... )
+Design Principles:
+    - Fail-safe: Never raises exceptions (logging is non-critical)
+    - Async-first: All methods are async for Discord API
+    - Testable: Easy to mock for testing
+    - Configurable: Channel names as constants
+
+Usage:
+    >>> logger = CommandLogger(bot)
+    >>> await logger.log_command(guild, user, "roll", {"dice": "3d6"}, "Rolled 15")
+    >>> await logger.log_gm_notification(guild, "Weather", "New weather generated")
 """
 
-from typing import Optional, Dict, Any, Union
-from dataclasses import dataclass
-
 import discord
-
-
-@dataclass
-class CommandLogEntry:
-    """
-    Data for a command log entry.
-
-    Attributes:
-        guild: Discord guild where command was executed
-        user_name: Display name of user who ran command
-        user_id: Discord user ID
-        command_name: Name of the command (e.g., "roll", "boat-handling")
-        command_string: Full command string with parameters
-        fields: Optional dict of field name/value pairs for the embed
-        color: Optional Discord color for the embed (default: blue)
-
-    Example:
-        CommandLogEntry(
-            guild=interaction.guild,
-            user_name="Anara",
-            user_id=123456789,
-            command_name="roll",
-            command_string="/roll 1d100 target:45 modifier:20",
-            fields={"Dice": "1d100", "Target": "45", "Modifier": "+20"},
-            color=discord.Color.blue(),
-        )
-    """
-
-    guild: discord.Guild
-    user_name: str
-    user_id: int
-    command_name: str
-    command_string: str
-    fields: Optional[Dict[str, str]] = None
-    color: Optional[discord.Color] = None
+from typing import Optional, Dict
+from datetime import datetime, timezone
 
 
 class CommandLogger:
     """
-    Service for logging Discord commands to a designated channel.
+    Service for logging commands to Discord channels.
 
-    Handles all command logging with graceful failure (no exceptions thrown
-    if channel missing or permissions denied). Logs include user info,
-    command details, and optional custom fields.
+    Handles logging to both user-visible and GM-only channels.
+    All methods are fail-safe and will not raise exceptions if
+    channels are missing.
 
-    Example:
-        logger = CommandLogger()
-        await logger.log_command(
-            guild=ctx.guild,
-            user_name=ctx.author.display_name,
-            user_id=ctx.author.id,
-            command_name="roll",
-            command_string="!roll 2d6+5",
-            fields={"Dice": "2d6+5"}
-        )
+    Attributes:
+        bot: Discord bot client for channel access
+        log_channel_name: Name of user-visible log channel
+        gm_channel_name: Name of GM-only notification channel
     """
 
-    # Channel name for command logs (configured via Discord)
-    LOG_CHANNEL_NAME = "boat-travelling-log"
+    def __init__(self, bot: discord.Client):
+        """
+        Initialize logger with bot instance.
 
-    def __init__(self):
-        """Initialize the CommandLogger service."""
-        pass
+        Args:
+            bot: Discord bot client for channel access
+        """
+        self.bot = bot
+        self.log_channel_name = "boat-travelling-log"
+        self.gm_channel_name = "boat-travelling-notifications"
 
     async def log_command(
         self,
         guild: discord.Guild,
-        user_name: str,
-        user_id: int,
+        user: discord.Member,
         command_name: str,
-        command_string: str,
-        fields: Optional[Dict[str, str]] = None,
-        color: Optional[discord.Color] = None,
+        parameters: Dict,
+        result_summary: str
     ) -> bool:
         """
-        Log a command execution to the boat-travelling-log channel.
+        Log command execution to user-visible channel.
 
-        Creates an embed with command details and sends it to the log channel.
-        Fails silently if channel doesn't exist or bot lacks permissions.
+        Creates a formatted embed with command details and sends it to
+        the designated log channel. Fails silently if channel not found.
 
         Args:
-            guild: Discord guild where command was executed
-            user_name: Display name of the user who ran the command
-            user_id: Discord user ID
-            command_name: Name of the command (e.g., "roll", "boat-handling")
-            command_string: Full command string with all parameters
-            fields: Optional dict of field name/value pairs to add to embed
-            color: Optional Discord color for the embed (default: blue)
+            guild: Discord guild where command was run
+            user: User who executed command
+            command_name: Name of command (e.g., "roll", "weather")
+            parameters: Command parameters as dict
+            result_summary: Brief summary of result
 
         Returns:
-            True if log was successfully sent, False if it failed silently
+            bool: True if logged successfully, False otherwise
 
         Example:
-            success = await logger.log_command(
-                guild=interaction.guild,
-                user_name="TestUser",
-                user_id=123456,
-                command_name="roll",
-                command_string="/roll 1d100",
-                fields={"Dice": "1d100"},
-                color=discord.Color.blue()
-            )
+            >>> await logger.log_command(
+            ...     guild=ctx.guild,
+            ...     user=ctx.author,
+            ...     command_name="roll",
+            ...     parameters={"dice": "3d6+2"},
+            ...     result_summary="Rolled 14"
+            ... )
         """
         try:
-            # Find the log channel
-            log_channel = discord.utils.get(
-                guild.text_channels, name=self.LOG_CHANNEL_NAME
+            # Find log channel
+            channel = discord.utils.get(guild.channels, name=self.log_channel_name)
+            if not channel:
+                return False  # Logging is non-critical, fail silently
+
+            # Create embed
+            embed = discord.Embed(
+                title=f"Command: {command_name}",
+                color=0x3498DB,
+                timestamp=datetime.now(timezone.utc)
             )
-            if not log_channel:
-                return False  # Channel doesn't exist, fail silently
+            embed.add_field(name="User", value=user.display_name, inline=True)
+            embed.add_field(name="Parameters", value=str(parameters), inline=False)
+            embed.add_field(name="Result", value=result_summary, inline=False)
 
-            # Use blue as default color
-            embed_color = color if color else discord.Color.blue()
-
-            # Create log embed
-            log_embed = discord.Embed(
-                title=f"📋 Command Log: {command_name.title()}",
-                description=f"**User:** {user_name} (`{user_id}`)\n**Command:** `{command_string}`",
-                color=embed_color,
-                timestamp=discord.utils.utcnow(),
-            )
-
-            # Add optional fields
-            if fields:
-                for field_name, field_value in fields.items():
-                    log_embed.add_field(name=field_name, value=field_value, inline=True)
-
-            await log_channel.send(embed=log_embed)
+            # Send to channel
+            await channel.send(embed=embed)
             return True
 
-        except (discord.Forbidden, discord.HTTPException, AttributeError):
-            # Silently fail - logging is not critical
-            # Forbidden: Bot lacks permissions
-            # HTTPException: Discord API error
-            # AttributeError: Guild or channel structure issues
+        except Exception:
+            # Logging failures should not crash commands
             return False
 
     async def log_command_from_context(
         self,
-        context: Union[discord.Interaction, Any],
+        context,
         command_name: str,
         command_string: str,
-        fields: Optional[Dict[str, str]] = None,
+        fields: Optional[Dict] = None,
         color: Optional[discord.Color] = None,
-        is_slash: bool = True,
+        is_slash: bool = False
     ) -> bool:
         """
-        Convenience method to log from a Discord context (Interaction or Context).
+        Log command execution from Discord context (convenience wrapper).
 
-        Extracts user info from context and calls log_command().
+        Extracts guild and user from context and logs command with custom fields.
 
         Args:
-            context: Discord Interaction (slash) or commands.Context (prefix)
-            command_name: Name of the command
-            command_string: Full command string with parameters
-            fields: Optional dict of field name/value pairs
-            color: Optional Discord color for the embed
-            is_slash: True if context is Interaction, False if commands.Context
+            context: Discord interaction context
+            command_name: Name of command
+            command_string: Full command string executed
+            fields: Optional dict of additional fields to display
+            color: Optional embed color
 
         Returns:
-            True if log was successfully sent, False otherwise
+            bool: True if logged successfully, False otherwise
+        """
+        try:
+            guild = context.guild
+            user = context.user
+
+            # Find log channel
+            channel = discord.utils.get(guild.channels, name=self.log_channel_name)
+            if not channel:
+                return False
+
+            # Create embed
+            embed = discord.Embed(
+                title=f"Command: {command_name}",
+                description=f"`{command_string}`",
+                color=color.value if color else 0x3498DB,
+                timestamp=datetime.now(timezone.utc)
+            )
+            embed.add_field(name="User", value=user.display_name, inline=True)
+
+            # Add custom fields
+            if fields:
+                for field_name, field_value in fields.items():
+                    embed.add_field(name=field_name, value=str(field_value), inline=True)
+
+            # Send to channel
+            await channel.send(embed=embed)
+            return True
+
+        except Exception:
+            return False  # Logging is non-critical, fail silently
+
+    async def log_gm_notification(
+        self,
+        guild: discord.Guild,
+        title: str,
+        description: str,
+        fields: Optional[Dict[str, str]] = None
+    ) -> bool:
+        """
+        Send notification to GM-only channel.
+
+        Creates a formatted embed with notification details and sends it to
+        the designated GM notification channel. Fails silently if channel not found.
+
+        Args:
+            guild: Discord guild
+            title: Notification title
+            description: Notification description
+            fields: Optional dict of field_name: field_value pairs
+
+        Returns:
+            bool: True if sent successfully, False otherwise
 
         Example:
-            await logger.log_command_from_context(
-                context=interaction,
-                command_name="roll",
-                command_string="/roll 1d100",
-                fields={"Dice": "1d100"},
-                is_slash=True
-            )
+            >>> await logger.log_gm_notification(
+            ...     guild=ctx.guild,
+            ...     title="Weather Generated",
+            ...     description="Day 5 weather created",
+            ...     fields={"Season": "Spring", "Province": "Reikland"}
+            ... )
         """
-        if not context.guild:
-            return False  # No guild, can't log
+        try:
+            # Find GM notification channel
+            channel = discord.utils.get(guild.channels, name=self.gm_channel_name)
+            if not channel:
+                return False  # Fail silently
 
-        # Extract user info based on context type
-        if is_slash:
-            user_name = context.user.display_name
-            user_id = context.user.id
-        else:
-            user_name = context.author.display_name
-            user_id = context.author.id
+            # Create embed
+            embed = discord.Embed(
+                title=title,
+                description=description,
+                color=0xF39C12,
+                timestamp=datetime.now(timezone.utc)
+            )
 
-        return await self.log_command(
-            guild=context.guild,
-            user_name=user_name,
-            user_id=user_id,
-            command_name=command_name,
-            command_string=command_string,
-            fields=fields,
-            color=color,
-        )
+            # Add optional fields
+            if fields:
+                for name, value in fields.items():
+                    embed.add_field(name=name, value=value, inline=False)
+
+            # Send to channel
+            await channel.send(embed=embed)
+            return True
+
+        except Exception:
+            # Logging failures should not crash commands
+            return False

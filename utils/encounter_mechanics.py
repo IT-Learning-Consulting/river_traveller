@@ -167,32 +167,32 @@ def generate_encounter(encounter_type: Optional[str] = None) -> Dict:
 
     # Get specific encounter details based on type
     if encounter_type == "uneventful":
-        uneventful_data = get_uneventful_encounter()
-        encounter_data.update(uneventful_data)
+        uneventful_encounter = get_uneventful_encounter()
+        encounter_data.update(uneventful_encounter.to_dict())
         encounter_data["detail_roll"] = None
 
     elif encounter_type == "positive":
         detail_roll = roll_dice(1, 100)[0]
-        positive_data = get_positive_encounter_from_roll(detail_roll)
-        encounter_data.update(positive_data)
+        positive_encounter = get_positive_encounter_from_roll(detail_roll)
+        encounter_data.update(positive_encounter.to_dict())
         encounter_data["detail_roll"] = detail_roll
 
     elif encounter_type == "coincidental":
         detail_roll = roll_dice(1, 100)[0]
-        coincidental_data = get_coincidental_encounter_from_roll(detail_roll)
-        encounter_data.update(coincidental_data)
+        coincidental_encounter = get_coincidental_encounter_from_roll(detail_roll)
+        encounter_data.update(coincidental_encounter.to_dict())
         encounter_data["detail_roll"] = detail_roll
 
     elif encounter_type == "harmful":
         detail_roll = roll_dice(1, 100)[0]
-        harmful_data = get_harmful_encounter_from_roll(detail_roll)
-        encounter_data.update(harmful_data)
+        harmful_encounter = get_harmful_encounter_from_roll(detail_roll)
+        encounter_data.update(harmful_encounter.to_dict())
         encounter_data["detail_roll"] = detail_roll
 
     elif encounter_type == "accident":
         detail_roll = roll_dice(1, 100)[0]
-        accident_data = get_accident_from_roll(detail_roll)
-        encounter_data.update(accident_data)
+        accident_encounter = get_accident_from_roll(detail_roll)
+        encounter_data.update(accident_encounter.to_dict())
         encounter_data["detail_roll"] = detail_roll
 
         # Special handling for Cargo Shift (41-50)

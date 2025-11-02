@@ -72,15 +72,13 @@ def setup(bot: commands.Bot) -> None:
         Called automatically from main.py during bot initialization.
     """
 
-    # Initialize handler once
-    handler = WeatherCommandHandler()
+    # Initialize handler with bot instance for logging
+    handler = WeatherCommandHandler(bot)
 
     # === MAIN WEATHER COMMAND ===
 
     # Slash command
-    @bot.tree.command(
-        name="weather", description="Manage daily weather for river travel journeys"
-    )
+    @bot.tree.command(name="weather", description="Manage daily weather for river travel journeys")
     @app_commands.describe(
         action="What to do",
         season="Season (for 'journey' and 'override' actions)",
@@ -143,14 +141,10 @@ def setup(bot: commands.Bot) -> None:
         # Check GM permissions for override action
         if action == "override":
             if not is_gm(interaction.user):
-                await interaction.response.send_message(
-                    "❌ Only GMs can override weather.", ephemeral=True
-                )
+                await interaction.response.send_message("❌ Only GMs can override weather.", ephemeral=True)
                 return
 
-        await handler.handle_command(
-            interaction, action, season, province, day, is_slash=True
-        )
+        await handler.handle_command(interaction, action, season, province, day, is_slash=True)
 
     # Prefix command
     @bot.command(name="weather")
@@ -220,20 +214,14 @@ def setup(bot: commands.Bot) -> None:
         """
         # Check GM permissions
         if not is_gm(interaction.user):
-            await interaction.response.send_message(
-                "❌ Only GMs can configure stage settings.", ephemeral=True
-            )
+            await interaction.response.send_message("❌ Only GMs can configure stage settings.", ephemeral=True)
             return
 
         try:
-            await handler.configure_stage(
-                interaction, stage_duration, display_mode, is_slash=True
-            )
+            await handler.configure_stage(interaction, stage_duration, display_mode, is_slash=True)
         except ValueError as e:
             # Validation error - inform user
-            await handle_value_error(
-                interaction, e, is_slash=True, command_name="Weather Stage Config"
-            )
+            await handle_value_error(interaction, e, is_slash=True, command_name="Weather Stage Config")
         except Exception as e:  # noqa: BLE001
             # Generic error (broad exception intentional for user safety)
             await handle_discord_error(interaction, e, is_slash=True)

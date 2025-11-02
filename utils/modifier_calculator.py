@@ -1,6 +1,25 @@
 """
 Calculate and extract weather modifiers for boat handling tests.
 
+⚠️ DEPRECATED MODULE - Will be removed in Phase 5
+This module has been superseded by WeatherModifierService (utils/weather_modifier_service.py).
+
+MIGRATION PATH:
+  OLD: from utils.modifier_calculator import get_active_weather_modifiers
+  NEW: from utils.weather_modifier_service import WeatherModifierService
+       service = WeatherModifierService()
+       impact = service.get_active_weather_modifiers(guild_id, time)
+       # Returns WeatherImpact dataclass instead of dict
+
+FUNCTIONS TO MIGRATE:
+  - get_active_weather_modifiers() → WeatherModifierService.get_active_weather_modifiers()
+  - get_weather_summary() → WeatherModifierService.get_weather_summary()
+  - format_weather_impact_for_embed() → Move to presentation/command layer
+
+REMAINING USAGE:
+  - commands/boat_handling.py still uses this module
+  - Will be migrated in Phase 5.1
+
 This module bridges the weather system and boat handling mechanics,
 extracting active weather conditions and converting them to test modifiers.
 
@@ -31,14 +50,11 @@ Usage Example:
     >>> formatted = format_weather_impact_for_embed(mods)
 """
 
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 from db.weather_storage import WeatherStorage
 from db.weather_data import WIND_STRENGTH, WIND_DIRECTION
 from utils.weather_mechanics import get_wind_modifiers, get_weather_effects
 from db.models.weather_models import WindTimeline, WindCondition
-
-# Module-level storage instance (can be overridden for testing)
-_storage_instance: Optional[WeatherStorage] = None
 
 # Time of day constants
 TIME_DAWN: str = "dawn"
@@ -69,24 +85,6 @@ NO_HAZARDS_TEXT: str = "No weather-related hazards"
 
 # Default display values
 DEFAULT_WIND_DISPLAY: str = "Unknown"
-
-
-def set_storage_instance(storage: WeatherStorage) -> None:
-    """
-    Set the storage instance for this module (primarily for testing).
-
-    Allows injection of mock storage for unit testing without filesystem I/O.
-
-    Args:
-        storage: WeatherStorage instance to use for subsequent calls
-
-    Example:
-        >>> from unittest.mock import MagicMock
-        >>> mock_storage = MagicMock(spec=WeatherStorage)
-        >>> set_storage_instance(mock_storage)
-    """
-    global _storage_instance  # noqa: PLW0603 - Intentional global for test injection
-    _storage_instance = storage
 
 
 def get_active_weather_modifiers(
@@ -128,11 +126,9 @@ def get_active_weather_modifiers(
         ...     print(f"Speed: {mods['wind_modifier_percent']}%")
         ...     print(f"Penalty: {mods['boat_handling_penalty']}")
     """
-    # Use provided storage, module-level storage, or create new one
+    # Use provided storage or create new one
     if storage is None:
-        storage = (
-            _storage_instance if _storage_instance is not None else WeatherStorage()
-        )
+        storage = WeatherStorage()
 
     # Get current journey state
     journey = storage.get_journey_state(guild_id)
@@ -140,6 +136,7 @@ def get_active_weather_modifiers(
         return None
 
     # Get current day weather
+    # current_day represents the current day being played
     current_day = journey.current_day
     weather = storage.get_daily_weather(guild_id, current_day)
 
@@ -197,40 +194,6 @@ def get_active_weather_modifiers(
         "weather_name": weather_effects_data["name"],
         "day_number": current_day,
     }
-
-
-def _get_wind_for_time(wind_timeline: List[Dict], time_of_day: str) -> Optional[Dict]:
-    """
-    Extract wind data for specific time of day from timeline.
-
-    Searches wind timeline for matching time entry. Case-insensitive.
-
-    Args:
-        wind_timeline: List of wind entries with 'time', 'strength', 'direction' keys
-        time_of_day: Time period (dawn, midday, dusk, midnight). Case-insensitive
-
-    Returns:
-        Optional[Dict]: Wind entry dict with keys 'time', 'strength', 'direction',
-            or None if not found
-
-    Example:
-        >>> timeline = [
-        ...     {"time": "Dawn", "strength": "light", "direction": "north"},
-        ...     {"time": "Midday", "strength": "moderate", "direction": "east"}
-        ... ]
-        >>> wind = _get_wind_for_time(timeline, "MIDDAY")
-        >>> print(wind['strength'])
-        moderate
-    """
-    target_time = TIME_MAP.get(time_of_day.lower())
-    if not target_time:
-        return None
-
-    for wind_entry in wind_timeline:
-        if wind_entry["time"] == target_time:
-            return wind_entry
-
-    return None
 
 
 def _get_wind_for_time_dataclass(
@@ -391,6 +354,7 @@ def get_weather_summary(guild_id: str) -> Optional[Dict]:
     if not journey:
         return None
 
+    # current_day represents the current day being played
     current_day = journey.current_day
     weather = storage.get_daily_weather(guild_id, current_day)
 

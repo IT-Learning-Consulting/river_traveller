@@ -47,6 +47,7 @@ Design Principles:
 
 from typing import Dict
 import random
+from db.models.encounter_models import Encounter
 
 # =============================================================================
 # MODULE-LEVEL CONSTANTS
@@ -304,7 +305,7 @@ POSITIVE_ENCOUNTERS = {
 }
 
 
-def get_positive_encounter_from_roll(roll: int) -> Dict:
+def get_positive_encounter_from_roll(roll: int) -> Encounter:
     """
     Get positive encounter GM details from a d100 roll.
 
@@ -316,29 +317,24 @@ def get_positive_encounter_from_roll(roll: int) -> Dict:
         roll: The d100 roll result (1-100)
 
     Returns:
-        Dictionary containing encounter details with keys:
-            - title: Encounter name
-            - description: Full GM description
-            - effects: List of mechanical effects
-            - mechanics: Dict with mechanical details (bonuses, healing, etc.) or None
-            - roll: The original roll value
+        Encounter dataclass with encounter details
 
     Raises:
         ValueError: If roll is outside 1-100 range or no encounter found
 
     Examples:
         >>> encounter = get_positive_encounter_from_roll(45)
-        >>> encounter['title']
+        >>> encounter.title
         'Experienced Guide'
-        >>> encounter['mechanics']['bonus']
+        >>> encounter.mechanics['bonus']
         '+10 to next Boat Handling Test'
     """
     if roll < D100_MIN or roll > D100_MAX:
         raise ValueError(f"Roll must be between {D100_MIN} and {D100_MAX}, got {roll}")
 
-    for (min_roll, max_roll), encounter in POSITIVE_ENCOUNTERS.items():
+    for (min_roll, max_roll), encounter_data in POSITIVE_ENCOUNTERS.items():
         if min_roll <= roll <= max_roll:
-            return {**encounter, KEY_ROLL: roll}
+            return Encounter.from_dict({**encounter_data, KEY_ROLL: roll}, ENCOUNTER_TYPE_POSITIVE)
 
     # Should never reach here if data is complete
     raise ValueError(f"No positive encounter found for roll {roll}")
@@ -412,7 +408,7 @@ COINCIDENTAL_ENCOUNTERS = {
 }
 
 
-def get_coincidental_encounter_from_roll(roll: int) -> Dict:
+def get_coincidental_encounter_from_roll(roll: int) -> Encounter:
     """
     Get coincidental encounter GM details from a d100 roll.
 
@@ -424,29 +420,24 @@ def get_coincidental_encounter_from_roll(roll: int) -> Dict:
         roll: The d100 roll result (1-100)
 
     Returns:
-        Dictionary containing encounter details with keys:
-            - title: Encounter name
-            - description: Full GM description
-            - effects: List of atmospheric/narrative effects
-            - mechanics: Always None for coincidental encounters
-            - roll: The original roll value
+        Encounter dataclass with encounter details
 
     Raises:
         ValueError: If roll is outside 1-100 range or no encounter found
 
     Examples:
         >>> encounter = get_coincidental_encounter_from_roll(15)
-        >>> encounter['title']
+        >>> encounter.title
         'Abandoned Boat'
-        >>> encounter['mechanics']
+        >>> encounter.mechanics
         None
     """
     if roll < D100_MIN or roll > D100_MAX:
         raise ValueError(f"Roll must be between {D100_MIN} and {D100_MAX}, got {roll}")
 
-    for (min_roll, max_roll), encounter in COINCIDENTAL_ENCOUNTERS.items():
+    for (min_roll, max_roll), encounter_data in COINCIDENTAL_ENCOUNTERS.items():
         if min_roll <= roll <= max_roll:
-            return {**encounter, KEY_ROLL: roll}
+            return Encounter.from_dict({**encounter_data, KEY_ROLL: roll}, ENCOUNTER_TYPE_COINCIDENTAL)
 
     # Should never reach here if data is complete
     raise ValueError(f"No coincidental encounter found for roll {roll}")
@@ -464,7 +455,7 @@ UNEVENTFUL_ENCOUNTER = {
 }
 
 
-def get_uneventful_encounter() -> Dict:
+def get_uneventful_encounter() -> Encounter:
     """
     Get the uneventful encounter details (nothing happens).
 
@@ -472,20 +463,16 @@ def get_uneventful_encounter() -> Dict:
     smoothly with no mechanical or narrative events.
 
     Returns:
-        Dictionary containing encounter details with keys:
-            - title: "Uneventful Travel"
-            - description: Standard uneventful description
-            - effects: Empty list (no effects)
-            - mechanics: None
+        Encounter dataclass with uneventful encounter details
 
     Examples:
         >>> encounter = get_uneventful_encounter()
-        >>> encounter['title']
+        >>> encounter.title
         'Uneventful Travel'
-        >>> encounter['effects']
+        >>> encounter.effects
         []
     """
-    return {**UNEVENTFUL_ENCOUNTER}
+    return Encounter.from_dict(UNEVENTFUL_ENCOUNTER, ENCOUNTER_TYPE_UNEVENTFUL)
 
 
 # =============================================================================
@@ -608,31 +595,26 @@ def get_harmful_encounter_from_roll(roll: int) -> Dict:
         roll: The d100 roll result (1-100)
 
     Returns:
-        Dictionary containing encounter details with keys:
-            - title: Encounter name
-            - description: Full GM description
-            - effects: List of harmful effects and consequences
-            - mechanics: Dict with test requirements, damage, combat details, etc.
-            - roll: The original roll value
+        Encounter dataclass with encounter details
 
     Raises:
         ValueError: If roll is outside 1-100 range or no encounter found
 
     Examples:
         >>> encounter = get_harmful_encounter_from_roll(15)
-        >>> encounter['title']
+        >>> encounter.title
         'River Pirates'
-        >>> encounter['mechanics']['combat']
+        >>> encounter.mechanics['combat']
         True
-        >>> encounter['mechanics']['enemies']
+        >>> encounter.mechanics['enemies']
         '3-6 River Pirates'
     """
     if roll < D100_MIN or roll > D100_MAX:
         raise ValueError(f"Roll must be between {D100_MIN} and {D100_MAX}, got {roll}")
 
-    for (min_roll, max_roll), encounter in HARMFUL_ENCOUNTERS.items():
+    for (min_roll, max_roll), encounter_data in HARMFUL_ENCOUNTERS.items():
         if min_roll <= roll <= max_roll:
-            return {**encounter, KEY_ROLL: roll}
+            return Encounter.from_dict({**encounter_data, KEY_ROLL: roll}, ENCOUNTER_TYPE_HARMFUL)
 
     # Should never reach here if data is complete
     raise ValueError(f"No harmful encounter found for roll {roll}")
@@ -905,31 +887,26 @@ def get_accident_from_roll(roll: int) -> Dict:
         roll: The d100 roll result (1-100)
 
     Returns:
-        Dictionary containing encounter details with keys:
-            - title: Accident name
-            - description: Full GM description
-            - effects: List of critical effects and hazards
-            - mechanics: Dict with complex nested test/failure mechanics
-            - roll: The original roll value
+        Encounter dataclass with accident details
 
     Raises:
         ValueError: If roll is outside 1-100 range or no accident found
 
     Examples:
         >>> accident = get_accident_from_roll(5)
-        >>> accident['title']
+        >>> accident.title
         'Steering'
-        >>> accident['mechanics']['damage_type']
+        >>> accident.mechanics['damage_type']
         'critical_hit_steering'
-        >>> accident['mechanics']['immediate_effect']
+        >>> accident.mechanics['immediate_effect']
         'Boat drifts uncontrollably'
     """
     if roll < D100_MIN or roll > D100_MAX:
         raise ValueError(f"Roll must be between {D100_MIN} and {D100_MAX}, got {roll}")
 
-    for (min_roll, max_roll), encounter in ACCIDENT_ENCOUNTERS.items():
+    for (min_roll, max_roll), encounter_data in ACCIDENT_ENCOUNTERS.items():
         if min_roll <= roll <= max_roll:
-            return {**encounter, KEY_ROLL: roll}
+            return Encounter.from_dict({**encounter_data, KEY_ROLL: roll}, ENCOUNTER_TYPE_ACCIDENT)
 
     # Should never reach here if data is complete
     raise ValueError(f"No accident encounter found for roll {roll}")

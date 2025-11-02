@@ -225,20 +225,14 @@ class DisplayService:
         season_name = WeatherFormatters.format_season_name(season)
 
         # Get actual temperature for emoji selection
-        actual_temp = weather_data.get(
-            "actual_temp", weather_data.get("temperature", DEFAULT_TEMPERATURE)
-        )
+        actual_temp = weather_data.get("actual_temp", weather_data.get("temperature", DEFAULT_TEMPERATURE))
 
         # Get emojis
         weather_emoji = WeatherFormatters.get_weather_emoji(weather_type)
         temp_emoji = WeatherFormatters.get_temperature_emoji(actual_temp)
 
         # Create title
-        title_prefix = (
-            f"{EMOJI_HISTORICAL} Historical Weather"
-            if is_historical
-            else f"{EMOJI_DAILY} Daily Weather"
-        )
+        title_prefix = f"{EMOJI_HISTORICAL} Historical Weather" if is_historical else f"{EMOJI_DAILY} Daily Weather"
         title = f"{title_prefix} - Day {day}"
 
         # Create embed
@@ -250,9 +244,7 @@ class DisplayService:
         )
 
         # Add weather condition field
-        weather_text = DisplayService._format_weather_condition(
-            weather_type, weather_effects
-        )
+        weather_text = DisplayService._format_weather_condition(weather_type, weather_effects)
         embed.add_field(
             name=f"{weather_emoji} Weather Condition",
             value=weather_text,
@@ -431,9 +423,7 @@ class DisplayService:
             first_direction = wind_timeline[0].get("direction", "")
 
             all_same = all(
-                w.get("strength") == first_strength
-                and w.get("direction") == first_direction
-                for w in wind_timeline
+                w.get("strength") == first_strength and w.get("direction") == first_direction for w in wind_timeline
             )
 
             if all_same and first_strength.lower() == "calm":
@@ -583,9 +573,7 @@ class DisplayService:
 
         # Build summary with day number
         if wind_strength.lower() == "calm":
-            summary = (
-                f"**Day {day_num}**\n{weather_display} | {actual_temp}°C | Calm winds"
-            )
+            summary = f"**Day {day_num}**\n{weather_display} | {actual_temp}°C | Calm winds"
         else:
             summary = f"**Day {day_num}**\n{weather_display} | {actual_temp}°C | {wind_display} {direction_display}"
 

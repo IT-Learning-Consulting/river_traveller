@@ -30,6 +30,7 @@ from db.character_data import (
     get_character,
     get_available_characters,
 )
+from db.weather_storage import WeatherStorage
 from utils.modifier_calculator import (
     get_active_weather_modifiers,
     format_weather_impact_for_embed,
@@ -177,14 +178,15 @@ def setup(bot: commands.Bot) -> None:
             guild_id = str(context.guild.id) if context.guild else None
             weather_mods = None
             if guild_id:
-                weather_mods = get_active_weather_modifiers(guild_id, time_of_day)
+                # Create storage with the correct database path (boat_travel.db, not weather.db)
+                storage = WeatherStorage("data/boat_travel.db")
+                weather_mods = get_active_weather_modifiers(guild_id, time_of_day, storage=storage)
 
-            # Apply weather-based difficulty modifier
+            # Get weather penalty (but don't modify difficulty yet - service will do it)
             original_difficulty = difficulty
             weather_penalty = 0
             if weather_mods and weather_mods["boat_handling_penalty"] != 0:
                 weather_penalty = weather_mods["boat_handling_penalty"]
-                difficulty += weather_penalty
 
             # Normalize character name
             char_key = character.lower().strip()
@@ -198,10 +200,11 @@ def setup(bot: commands.Bot) -> None:
                 )
 
             # Perform boat handling test using service
+            # Pass original difficulty - service will apply weather_penalty
             service = BoatHandlingService()
             result = service.perform_boat_test(
                 character=char,
-                difficulty=difficulty,
+                difficulty=difficulty,  # Original difficulty, not modified
                 weather_penalty=weather_penalty,
             )
 
